@@ -106,6 +106,15 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         )
     }
 
+    pub fn sort(self) -> Stream<'a, T, W, N>
+     where T: Ord {
+        Stream::new(
+            self.node,
+            self.ir_leaves,
+            HfPlusNode::Sort(Box::new(self.ir_node.into_inner())),
+        )
+    }
+
     pub fn enumerate(self) -> Stream<'a, (usize, T), W, N> {
         Stream::new(
             self.node,

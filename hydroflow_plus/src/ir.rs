@@ -203,6 +203,7 @@ pub enum HfPlusNode {
         f: DebugExpr,
         input: Box<HfPlusNode>,
     },
+    Sort(Box<HfPlusNode>),
     Enumerate(Box<HfPlusNode>),
     Inspect {
         f: DebugExpr,
@@ -327,9 +328,12 @@ impl HfPlusNode {
                 f,
                 input: Box::new(transform(*input, seen_tees)),
             },
+            HfPlusNode::Sort(input) => {
+                HfPlusNode::Sort(Box::new(transform(*input, seen_tees)))
+            },
             HfPlusNode::Enumerate(input) => {
                 HfPlusNode::Enumerate(Box::new(transform(*input, seen_tees)))
-            }
+            },
             HfPlusNode::Inspect { f, input } => HfPlusNode::Inspect {
                 f,
                 input: Box::new(transform(*input, seen_tees)),
@@ -730,6 +734,24 @@ impl HfPlusNode {
                 });
 
                 (filter_map_ident, input_location_id)
+            }
+
+            HfPlusNode::Sort(input) => {
+                let (input_ident, input_location_id) =
+                    input.emit(graph_builders, built_tees, next_stmt_id);
+
+                let sort_id = *next_stmt_id;
+                *next_stmt_id += 1;
+
+                let sort_ident =
+                    syn::Ident::new(&format!("stream_{}", sort_id), Span::call_site());
+
+                let builder = graph_builders.entry(input_location_id).or_default();
+                builder.add_statement(parse_quote! {
+                    #sort_ident = #input_ident -> sort();
+                });
+
+                (sort_ident, input_location_id)
             }
 
             HfPlusNode::Enumerate(input) => {
