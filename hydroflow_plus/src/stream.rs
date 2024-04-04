@@ -5,6 +5,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 use hydroflow::bytes::Bytes;
+use hydroflow::futures::io::Window;
 use hydroflow::futures::Sink;
 use hydroflow_lang::parse::Pipeline;
 use proc_macro2::{Span, TokenStream};
@@ -106,12 +107,11 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         )
     }
 
-    pub fn sort(self) -> Stream<'a, T, W, N>
-     where T: Ord {
+    pub fn defer_tick(self) -> Stream<'a, T, W, N> {
         Stream::new(
             self.node,
             self.ir_leaves,
-            HfPlusNode::Sort(Box::new(self.ir_node.into_inner())),
+            HfPlusNode::DeferTick(Box::new(self.ir_node.into_inner())),
         )
     }
 
@@ -226,7 +226,17 @@ impl<'a, T, N: Location + Clone> Stream<'a, T, Async, N> {
     }
 }
 
+
 impl<'a, T, N: Location + Clone> Stream<'a, T, Windowed, N> {
+    pub fn sort(self) -> Stream<'a, T, Windowed, N>
+     where T: Ord {
+        Stream::new(
+            self.node,
+            self.ir_leaves,
+            HfPlusNode::Sort(Box::new(self.ir_node.into_inner())),
+        )
+    }
+
     pub fn fold<A, I: Fn() -> A + 'a, C: Fn(&mut A, T)>(
         self,
         init: impl IntoQuotedMut<'a, I>,
