@@ -206,7 +206,8 @@ pub enum HfPlusNode {
         f: DebugExpr,
         input: Box<HfPlusNode>,
     },
-    Sort(Box<HfPlusNode>),
+    
+    DeferTick(Box<HfPlusNode>),
     Enumerate(Box<HfPlusNode>),
     Inspect {
         f: DebugExpr,
@@ -215,6 +216,7 @@ pub enum HfPlusNode {
 
     Unique(Box<HfPlusNode>),
 
+    Sort(Box<HfPlusNode>),
     Fold {
         init: DebugExpr,
         acc: DebugExpr,
@@ -340,6 +342,9 @@ impl HfPlusNode {
             },
             HfPlusNode::Sort(input) => {
                 HfPlusNode::Sort(Box::new(transform(*input, seen_tees)))
+            },
+            HfPlusNode::DeferTick(input) => {
+                HfPlusNode::DeferTick(Box::new(transform(*input, seen_tees)))
             },
             HfPlusNode::Enumerate(input) => {
                 HfPlusNode::Enumerate(Box::new(transform(*input, seen_tees)))
@@ -796,6 +801,24 @@ impl HfPlusNode {
                 });
 
                 (sort_ident, input_location_id)
+            }
+
+            HfPlusNode::DeferTick(input) => {
+                let (input_ident, input_location_id) =
+                    input.emit(graph_builders, built_tees, next_stmt_id);
+
+                let defer_tick_id = *next_stmt_id;
+                *next_stmt_id += 1;
+
+                let defer_tick_ident =
+                    syn::Ident::new(&format!("stream_{}", defer_tick_id), Span::call_site());
+
+                let builder = graph_builders.entry(input_location_id).or_default();
+                builder.add_statement(parse_quote! {
+                    #defer_tick_ident = #input_ident -> defer_tick();
+                });
+
+                (defer_tick_ident, input_location_id)
             }
 
             HfPlusNode::Enumerate(input) => {
