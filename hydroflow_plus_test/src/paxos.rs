@@ -77,15 +77,15 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let replicas = flow.cluster(replicas_spec);
 
     /* Proposers */
-    flow.source_iter(&proposers, q!(vec!["Proposers say hello"]))
+    flow.source_iter(&proposers, q!(["Proposers say hello"]))
         .for_each(q!(|s| println!("{}", s)));
 
     /* Acceptors */
-    flow.source_iter(&acceptors, q!(vec!["Acceptors say hello"]))
+    flow.source_iter(&acceptors, q!(["Acceptors say hello"]))
         .for_each(q!(|s| println!("{}", s)));
 
     /* Clients */
-    let clients_to_replicas = flow
+    let c_to_replicas_tick_1 = flow
         .source_iter(&clients, q!([
             // ReplicaPayload { seq: 1, key: 10, value: "Hello again, Berkeley!".to_string() },
             // ReplicaPayload { seq: 2, key: 10, value: "Goodbye, Berkeley".to_string() },
@@ -97,20 +97,24 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
             (0, 10, "Hello, Berkeley!".to_string()),
             (3, 20, "Hello, SF".to_string()),
             (5, 20, "Goodbye, SF".to_string())
-        ]))
+        ]));
+        
+    let c_to_replicas_tick_2 = flow
+        .source_iter(&clients, q!([(4, 10, "No more Berkeley".to_string())]))
+        .defer_tick();
+    let c_to_replicas = c_to_replicas_tick_1
+        .union(c_to_replicas_tick_2)
         .broadcast_bincode_interleaved(&replicas);
-    // TODO: Results should be: {10: "Goodbye, Berkeley", 20: "Hello, SF"}. The last "Goodbye, SF" should not be executed because there's a hole between sequence 2 and 4.
 
     /* Replicas. All relations for replicas will be prefixed with r. */
-
     let (r_buffered_payloads_complete_cycle, r_buffered_payloads) = flow.cycle(&replicas);
-    let r_sorted_payloads = clients_to_replicas
+    let r_sorted_payloads = c_to_replicas
         .tick_batch()
         .union(r_buffered_payloads) // Combine with all payloads that we've received and not processed yet
         .sort();
     // Create a cycle since we'll use this seq before we define it
     let (r_highest_seq_complete_cycle, r_highest_seq) = flow.cycle(&replicas);
-    let empty_slot = flow.source_iter(&replicas, q!(vec![-1]));
+    let empty_slot = flow.source_iter(&replicas, q!([-1]));
     // Either the max sequence number executed so far or -1. Need to union otherwise r_highest_seq is empty and joins with it will fail
     let r_highest_seq_with_default = r_highest_seq
         .union(empty_slot);
@@ -254,16 +258,18 @@ mod tests {
 
         deployment.deploy().await.unwrap();
 
-        // let replicas_stdouts =
-        //     futures::future::join_all(replicas.members.iter().map(|replica| replica.stdout())).await;
-
         deployment.start().await.unwrap();
 
-        // TODO: Figure out what the printed map looks like
-        // for (i, stdout) in r_stdouts.into_iter().enumerate() {
-            // assert_eq!(
-            //         stdout.recv().await.unwrap(),
-            //         format!("cluster received: ({}, {})", i, j));
-        // }
+        tokio::signal::ctrl_c().await.unwrap();
+
+        // Expected output:
+        /*
+        [service/6] Replica kv store: {10: "Hello, Berkeley!"}
+        [service/6] Replica kv store: {10: "Hello again, Berkeley!"}
+        [service/6] Replica kv store: {10: "Goodbye, Berkeley"}
+        [service/6] Replica kv store: {20: "Hello, SF", 10: "Goodbye, Berkeley"}
+        [service/6] Replica kv store: {20: "Hello, SF", 10: "No more Berkeley"}
+        [service/6] Replica kv store: {20: "Goodbye, SF", 10: "No more Berkeley"}
+         */
     }
 }
