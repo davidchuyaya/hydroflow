@@ -76,6 +76,14 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let clients = flow.cluster(clients_spec);
     let replicas = flow.cluster(replicas_spec);
 
+    /* Proposers */
+    flow.source_iter(&proposers, q!(vec!["Proposers say hello"]))
+        .for_each(q!(|s| println!("{}", s)));
+
+    /* Acceptors */
+    flow.source_iter(&acceptors, q!(vec!["Acceptors say hello"]))
+        .for_each(q!(|s| println!("{}", s)));
+
     /* Clients */
     let clients_to_replicas = flow
         .source_iter(&clients, q!([
@@ -145,6 +153,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         }));
     // Update the highest seq for the next tick
     let r_new_highest_seq = r_kv_store
+        .clone()
         .map(q!(|(kv_store, highest_seq)| highest_seq))
         .defer_tick();
     r_highest_seq_complete_cycle.complete(r_new_highest_seq);
