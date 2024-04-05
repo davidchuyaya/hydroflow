@@ -30,6 +30,7 @@ pub mod negation;
 pub(crate) mod networked;
 #[cfg(not(stageleft_macro))]
 pub mod networked;
+pub mod paxos;
 
 #[stageleft::entry(UnboundedReceiverStream<u32>)]
 pub fn teed_join<'a, S: Stream<Item = u32> + Unpin + 'a>(
