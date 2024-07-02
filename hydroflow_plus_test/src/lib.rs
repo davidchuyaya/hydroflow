@@ -14,6 +14,10 @@ pub mod local;
 pub(crate) mod distributed;
 #[cfg(not(stageleft_macro))]
 pub mod networked;
+
+#[cfg(stageleft_macro)]
+pub(crate) mod paxos;
+#[cfg(not(stageleft_macro))]
 pub mod paxos;
 
 #[stageleft::entry(UnboundedReceiverStream<u32>)]

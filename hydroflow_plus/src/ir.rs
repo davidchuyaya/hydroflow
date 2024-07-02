@@ -538,9 +538,9 @@ impl HfPlusNode {
 
             HfPlusNode::CrossProduct(..) | HfPlusNode::Join(..) => {
                 let operator: syn::Ident = if matches!(self, HfPlusNode::CrossProduct(..)) {
-                    parse_quote!(cross_join)
+                    parse_quote!(cross_join_multiset)
                 } else {
-                    parse_quote!(join)
+                    parse_quote!(join_multiset)
                 };
 
                 let (HfPlusNode::CrossProduct(left, right) | HfPlusNode::Join(left, right)) = self
