@@ -1,4 +1,6 @@
 // cannot use hydroflow::main because connect_local_blocking causes a deadlock
+use std::time::Duration;
+
 #[tokio::main]
 async fn main() {
     let f = 1;

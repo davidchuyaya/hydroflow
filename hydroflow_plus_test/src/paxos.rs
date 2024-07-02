@@ -59,7 +59,8 @@ struct P2b {
     value: ClientPayload,
 }
 
-
+// Important: By convention, all relations that represent booleans either have a single "true" value or nothing.
+// This allows us to use the continue_if_exists() and continue_if_empty() operators as if they were if (true) and if (false) statements.
 pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     flow: &FlowBuilder<'a, D>,
     proposers_spec: &impl ClusterSpec<'a, D>,
@@ -88,6 +89,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     /* State */
     let p_id = proposers.self_id();
     let (p_ballot_num_complete_cycle, p_ballot_num) = flow.cycle(&proposers);
+
     let (p_is_leader_complete_cycle, p_is_leader) = flow.cycle(&proposers);
 
     /* Channels */
@@ -110,27 +112,21 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .union(p_received_p2b_ballots)
         .union(p_to_proposers_i_am_leader.clone())
         .all_ticks()
-        .reduce(q!(|curr_max_ballot, new_ballot| {
+        .fold(q!(|| Ballot { num: 0, id: 0 }), q!(|curr_max_ballot, new_ballot| {
             if new_ballot > *curr_max_ballot {
                 *curr_max_ballot = new_ballot;
             }
         }));
     let p_has_largest_ballot = p_received_max_ballot
+        .clone()
         .cross_product(p_ballot_num.clone())
-        .map(q!(move |(received_max_ballot, ballot_num)| received_max_ballot <= Ballot { num: ballot_num, id: p_id }));
+        .bool_singleton(q!(move |(received_max_ballot, ballot_num)| received_max_ballot <= Ballot { num: ballot_num, id: p_id }));
 
-    let p_i_am_leader_new = p_is_leader
+    let p_i_am_leader_new = p_ballot_num
         .clone()
         .sample_every(q!(*i_am_leader_send_timeout))
-        .cross_product(p_ballot_num.clone())
-        .filter_map(q!(move |(is_leader, ballot_num): (bool, u32)| {
-            if is_leader {
-                Some(Ballot { num: ballot_num, id: p_id })
-            }
-            else {
-                None
-            }       
-        }))
+        .continue_if(p_is_leader.clone())
+        .map(q!(move |ballot_num| Ballot { num: ballot_num, id: p_id }))
         .broadcast_bincode_interleaved(&proposers);
     p_to_proposers_i_am_leader_complete_cycle.complete(p_i_am_leader_new);
     let p_latest_received_i_am_leader = p_to_proposers_i_am_leader
@@ -140,15 +136,48 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
             *latest = SystemTime::now();
         }));
     let p_leader_expired = p_latest_received_i_am_leader
-        .sample_every(q!(*i_am_leader_check_timeout))
-        .cross_product(p_is_leader.clone())
-        .map(q!(|(latest_received_i_am_leader, is_leader)| (SystemTime::now() - *i_am_leader_check_timeout > latest_received_i_am_leader) && !is_leader));
+        .sample_every(q!(*i_am_leader_check_timeout + Duration::from_secs(p_id.into()))) // Add random delay depending on node ID so not everyone sends p1a at the same time
+        .continue_unless(p_is_leader.clone())
+        .bool_singleton(q!(|latest_received_i_am_leader| SystemTime::now() - *i_am_leader_check_timeout > latest_received_i_am_leader));
 
-
-    let p_to_acceptors_p1a = flow
-        .source_iter(&proposers, q!([P1a { ballot: Ballot { num: 1, id: p_id } }]))
+    let p_to_acceptors_p1a = p_ballot_num
+        .clone()
+        .continue_if(p_leader_expired.clone())
+        .map(q!(move |ballot_num| P1a { ballot: Ballot { num: ballot_num, id: p_id } }))
         .broadcast_bincode_interleaved(&acceptors);
 
+    let p_new_ballot_num = p_received_max_ballot
+        .clone()
+        .cross_product(p_ballot_num.clone())
+        .map(q!(move |(received_max_ballot, ballot_num)| {
+            if received_max_ballot > (Ballot { num: ballot_num, id: p_id }) {
+                received_max_ballot.num + 1
+            }
+            else {
+                ballot_num
+            }
+        }))
+        .defer_tick();
+    let p_start_ballot_num = flow
+        .source_iter(&proposers, q!([0]));
+    p_ballot_num_complete_cycle.complete(p_start_ballot_num.union(p_new_ballot_num));
+    /* End stable leader election */
+
+    /* Reconcile p1b log with local log */
+    let p_relevant_p1bs = a_to_proposers_p1b
+        .clone()
+        .tick_batch()
+        .cross_product(p_ballot_num.clone())
+        .filter(q!(move |((sender, p1b), ballot_num)| p1b.ballot == Ballot { num: *ballot_num, id: p_id}));
+    let p_received_quorum_of_p1bs = p_relevant_p1bs
+        .clone()
+        .map(q!(|((sender, p1b), ballot_num)| sender))
+        .unique()
+        .count()
+        .bool_singleton(q!(|num_received| num_received > *f));
+    let p_is_leader_new = p_received_quorum_of_p1bs
+        .continue_if(p_has_largest_ballot.clone());
+    p_is_leader_complete_cycle.complete(p_is_leader_new);
 
     let p_to_acceptors_p2a = flow
         .source_iter(&proposers, q!([P2a { ballot: Ballot { num: 1, id: p_id }, slot: 1, value: ClientPayload { key: 10, value: "Proposer says hi!".to_string() } }]))

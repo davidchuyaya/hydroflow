@@ -178,6 +178,25 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         )
     }
 
+    // If the condition is true, then the stream contains "true". Otherwise, it is empty. If the stream is not a singleton, then the behavior is undefined.
+    pub fn bool_singleton<F: Fn(T) -> bool + 'a>(
+        self,
+        f: impl IntoQuotedMut<'a, F>,
+    ) -> Stream<'a, bool, W, N> {
+        self.map(f).filter(q!(|b| *b))
+    }
+
+    // Allow this stream through if the other stream has elements. If the other stream is not a bool singleton, then the behavior is undefined.
+    // TODO(david): Ask Shadaj if I can make the other stream's type generic O instead of bool. Rust complains right now that it can't infer the type
+    pub fn continue_if(self, other: Stream<'a, bool, W, N>) -> Stream<'a, T, W, N> {
+        self.cross_product(other).map(q!(|(a, _)| a))
+    }
+
+    // Allow this stream through if the other stream is empty. If the other stream is not a bool singleton, then the behavior is undefined.
+    pub fn continue_unless(self, other: Stream<'a, bool, W, N>) -> Stream<'a, T, W, N> {
+        self.map(q!(|a| ((), a))).anti_join(other.map(q!(|_| ()))).map(q!(|(_, a)| a))
+    }
+
     pub fn union(self, other: Stream<'a, T, W, N>) -> Stream<'a, T, W, N> {
         if self.node.id() != other.node.id() {
             panic!("union must be called on streams on the same node");

@@ -614,9 +614,9 @@ impl HfPlusNode {
 
             HfPlusNode::Difference(..) | HfPlusNode::AntiJoin(..) => {
                 let operator: syn::Ident = if matches!(self, HfPlusNode::Difference(..)) {
-                    parse_quote!(difference)
+                    parse_quote!(difference_multiset)
                 } else {
-                    parse_quote!(anti_join)
+                    parse_quote!(anti_join_multiset)
                 };
 
                 let (HfPlusNode::Difference(left, right) | HfPlusNode::AntiJoin(left, right)) =
