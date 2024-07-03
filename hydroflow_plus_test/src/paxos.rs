@@ -80,6 +80,22 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let replicas = flow.cluster(replicas_spec);
 
 
+    /* Clients. All relations for clients will be prefixed with c. */
+
+    
+    // TODO: Modify so it continuously sends payloads, only to the leader
+    // TODO: Timeout logic per client in case some commits never make it to replicas because of leader reelection
+    // TODO: Communication from replicas to clients
+    let c_to_proposers = flow
+        .source_iter(&clients, q!([
+            ClientPayload { key: 10, value: "Hello, Berkeley!".to_string() },
+            ClientPayload { key: 10, value: "Goodbye, Berkeley".to_string() },
+            ClientPayload { key: 20, value: "Hello, SF".to_string() },
+            ClientPayload { key: 20, value: "Goodbye, SF".to_string() }
+        ]))
+        .broadcast_bincode_interleaved(&proposers);
+
+
     /* Proposers. All relations for proposers will be prefixed with p. */
 
 
@@ -96,18 +112,18 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let (p_to_proposers_i_am_leader_complete_cycle, p_to_proposers_i_am_leader) = flow.cycle(&proposers);
     let (a_to_proposers_p1b_complete_cycle, a_to_proposers_p1b) = flow.cycle(&proposers);
     a_to_proposers_p1b.clone()
-        .for_each(q!(|(sender, p1b): (u32, P1b)| println!("Proposer received P1b: {:?}", p1b)));
+        .for_each(q!(|(_, p1b): (u32, P1b)| println!("Proposer received P1b: {:?}", p1b)));
     let (a_to_proposers_p2b_complete_cycle, a_to_proposers_p2b) = flow.cycle(&proposers);
     a_to_proposers_p2b.clone()
-        .for_each(q!(|(sender, p2b): (u32, P2b)| println!("Proposer received P2b: {:?}", p2b)));
+        .for_each(q!(|(_, p2b): (u32, P2b)| println!("Proposer received P2b: {:?}", p2b)));
 
     /* Stable leader election */
     let p_received_p1b_ballots = a_to_proposers_p1b
         .clone()
-        .map(q!(|(sender, p1b)| p1b.max_ballot));
+        .map(q!(|(_, p1b): (_, P1b)| p1b.max_ballot));
     let p_received_p2b_ballots = a_to_proposers_p2b
         .clone()
-        .map(q!(|(sender, p2b)| p2b.max_ballot));
+        .map(q!(|(_, p2b): (_, P2b)| p2b.max_ballot));
     let p_received_max_ballot = p_received_p1b_ballots
         .union(p_received_p2b_ballots)
         .union(p_to_proposers_i_am_leader.clone())
@@ -132,7 +148,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let p_latest_received_i_am_leader = p_to_proposers_i_am_leader
         .clone()
         .all_ticks()
-        .fold(q!(|| SystemTime::now()), q!(|latest, new_msg| {
+        .fold(q!(|| SystemTime::now()), q!(|latest, _| { // Note: May want to check received ballot against our own?
             *latest = SystemTime::now();
         }));
     let p_leader_expired = p_latest_received_i_am_leader
@@ -166,7 +182,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     /* Reconcile p1b log with local log */
     let p_relevant_p1bs = a_to_proposers_p1b
         .clone()
-        .tick_batch()
+        .all_ticks()
         .cross_product(p_ballot_num.clone())
         .filter(q!(move |((sender, p1b), ballot_num)| p1b.ballot == Ballot { num: *ballot_num, id: p_id}));
     let p_received_quorum_of_p1bs = p_relevant_p1bs
@@ -179,10 +195,161 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .continue_if(p_has_largest_ballot.clone());
     p_is_leader_complete_cycle.complete(p_is_leader_new);
 
-    let p_to_acceptors_p2a = flow
-        .source_iter(&proposers, q!([P2a { ballot: Ballot { num: 1, id: p_id }, slot: 1, value: ClientPayload { key: 10, value: "Proposer says hi!".to_string() } }]))
+    let p_p1b_highest_entries_and_count = p_relevant_p1bs
+        .clone()
+        .flat_map(q!(|((_, p1b), _)| p1b.accepted.into_iter())) // Convert HashMap log back to stream
+        .fold_keyed(q!(|| (0, LogValue { ballot: Ballot { num: 0, id: 0 }, value: ClientPayload { key: 0, value: "".to_string() } })), q!(|curr_entry, new_entry| {
+            let same_values = new_entry.value == curr_entry.1.value;
+            let higher_ballot = new_entry.ballot > curr_entry.1.ballot;
+            // Increment count if the values are the same
+            if same_values {
+                curr_entry.0 += 1;
+            }
+            // Replace the ballot with the largest one
+            if higher_ballot {
+                curr_entry.1.ballot = new_entry.ballot;
+                // Replace the value with the one from the largest ballot, if necessary
+                if !same_values {
+                    curr_entry.0 = 1;
+                    curr_entry.1.value = new_entry.value;
+                }
+            }
+        }));
+    let p_log_to_try_commit = p_p1b_highest_entries_and_count
+        .clone()
+        .cross_product(p_ballot_num.clone())
+        .filter_map(q!(move |((slot, (count, entry)), ballot_num)|
+            if count <= *f { 
+                Some(P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: slot, value: entry.value})
+            } 
+            else { 
+                None 
+            }));
+    let p_max_slot = p_p1b_highest_entries_and_count
+        .clone()
+        .fold(q!(|| 0), q!(|max_slot, (slot, (count, entry))| {
+            if slot > *max_slot {
+                *max_slot = slot;
+            }
+        }));
+    let p_proposed_slots = p_p1b_highest_entries_and_count
+        .clone()
+        .map(q!(|(slot, _)| slot));
+    let p_log_holes = p_max_slot
+        .clone()
+        .flat_map(q!(|max_slot| 0..max_slot))
+        .filter_not_in(p_proposed_slots)
+        .cross_product(p_ballot_num.clone())
+        .map(q!(move |(slot, ballot_num)| P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: slot, value: ClientPayload { key: 0, value: "".to_string() } }));
+        
+    let (p_next_slot_complete_cycle, p_next_slot) = flow.cycle(&proposers);
+    let p_next_slot_after_reconciling_p1bs = p_max_slot
+        .map(q!(|max_slot| max_slot + 1));
+    /* End reconcile p1b log with local log */
+
+    /* Send p2as */
+    let p_indexed_payloads = c_to_proposers
+        .clone()
+        .tick_batch()
+        .enumerate()
+        .cross_product(p_next_slot.clone())
+        .cross_product(p_ballot_num.clone())
+        .map(q!(move |(((index, payload), next_slot), ballot_num): (((usize, ClientPayload), i32), u32)| P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: next_slot + index as i32, value: payload }));
+    let p_next_slot_exists = p_next_slot
+        .clone()
+        .map(q!(|_: i32| true));
+    let p_to_acceptors_p2a = p_log_to_try_commit
+        .union(p_log_holes)
+        .continue_unless(p_next_slot_exists.clone()) // Only resend p1b stuff once. Once it's resent, next_slot will exist.
+        .union(p_indexed_payloads)
+        .continue_if(p_is_leader.clone())
         .broadcast_bincode_interleaved(&acceptors);
 
+    let p_num_payloads = c_to_proposers
+        .clone()
+        .tick_batch()
+        .count();
+    let p_next_slot_after_sending_payloads = p_num_payloads
+        .clone()
+        .cross_product(p_next_slot.clone())
+        .map(q!(|(num_payloads, next_slot): (usize, i32)| next_slot + num_payloads as i32));
+    let p_exists_payloads = p_num_payloads
+        .clone()
+        .bool_singleton(q!(|num_payloads| num_payloads > 0));
+    let p_next_slot_if_no_payloads = p_next_slot
+        .clone()
+        .continue_unless(p_exists_payloads);
+    let p_next_slot_new = p_next_slot_after_reconciling_p1bs
+        .union(p_next_slot_after_sending_payloads)
+        .union(p_next_slot_if_no_payloads)
+        .continue_if(p_is_leader.clone())
+        .defer_tick();
+    p_next_slot_complete_cycle.complete(p_next_slot_new);
+    /* End send p2as */
+    
+    /* Process p2bs */
+    let (p_broadcasted_p2b_slots_complete_cycle, p_broadcasted_p2b_slots) = flow.cycle(&proposers);
+    let (p_persisted_p2bs_complete_cycle, p_persisted_p2bs) = flow.cycle(&proposers);
+    let p_p2b = a_to_proposers_p2b
+        .clone()
+        .tick_batch()
+        .union(p_persisted_p2bs);
+    let p_count_matching_p2bs = p_p2b
+        .clone()
+        .filter_map(q!(|(sender, p2b)| 
+            if p2b.ballot == p2b.max_ballot { // Only consider p2bs where max ballot = ballot, which means that no one preempted us
+                Some((p2b.slot, (sender, p2b)))
+            }
+            else {
+                None
+            }
+        ))
+        .fold_keyed(q!(|| (0, P2b { ballot: Ballot { num: 0, id: 0 }, max_ballot: Ballot { num: 0, id: 0 }, slot: 0, value: ClientPayload { key: 0, value: "".to_string() } } )),
+            q!(|accum, (sender, p2b)| {
+            accum.0 += 1;
+            accum.1 = p2b;
+        }));
+    let p_p2b_quorum_reached = p_count_matching_p2bs
+        .clone()
+        .anti_join(p_broadcasted_p2b_slots) // Only tell the replicas about committed values once
+        .filter_map(q!(|(slot, (count, p2b))| 
+            if count > *f {
+                Some(p2b)
+            }
+            else {
+                None
+            }
+        ));
+    let p_to_replicas = p_p2b_quorum_reached
+        .clone()
+        .map(q!(|p2b| ReplicaPayload { seq: p2b.slot, key: p2b.value.key, value: p2b.value.value }))
+        .broadcast_bincode_interleaved(&replicas);
+
+    let p_p2b_all_commit_slots = p_count_matching_p2bs
+        .clone()
+        .filter_map(q!(|(slot, (count, p2b))| 
+            if count == 2 * *f + 1 {
+                Some(slot)
+            }
+            else {
+                None
+            }
+        ));
+    let p_broadcasted_p2b_slots_new = p_p2b_quorum_reached
+        .clone()    
+        .map(q!(|p2b| p2b.slot))
+        .filter_not_in(p_p2b_all_commit_slots.clone())
+        .defer_tick();
+    p_broadcasted_p2b_slots_complete_cycle.complete(p_broadcasted_p2b_slots_new);
+    let p_persisted_p2bs_new = p_p2b
+        .clone()
+        .map(q!(|(sender, p2b)| (p2b.slot, (sender, p2b))))
+        .anti_join(p_p2b_all_commit_slots.clone())
+        .map(q!(|(slot, (sender, p2b))| (sender, p2b)))
+        .defer_tick();
+    p_persisted_p2bs_complete_cycle.complete(p_persisted_p2bs_new);
+    /* End process p2bs */
+    
 
     /* Acceptors. All relations for acceptors will be prefixed with a. */
 
@@ -231,31 +398,11 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     a_to_proposers_p2b_complete_cycle.complete(a_to_proposers_p2b_new);
 
 
-    /* Clients. All relations for clients will be prefixed with c. */
-
-
-    let c_to_replicas_tick_1 = flow
-        .source_iter(&clients, q!([
-            ReplicaPayload { seq: 1, key: 10, value: "Hello again, Berkeley!".to_string() },
-            ReplicaPayload { seq: 2, key: 10, value: "Goodbye, Berkeley".to_string() },
-            ReplicaPayload { seq: 0, key: 10, value: "Hello, Berkeley!".to_string() },
-            ReplicaPayload { seq: 3, key: 20, value: "Hello, SF".to_string() },
-            ReplicaPayload { seq: 5, key: 20, value: "Goodbye, SF".to_string() }
-        ]));
-    let c_to_replicas_tick_2 = flow
-        .source_iter(&clients, q!([ReplicaPayload { seq: 4, key: 10, value: "No more Berkeley".to_string()}]))
-        .defer_tick();
-    let c_to_replicas = c_to_replicas_tick_1
-        .union(c_to_replicas_tick_2)
-        .broadcast_bincode_interleaved(&replicas);
-
-
-
     /* Replicas. All relations for replicas will be prefixed with r. */
 
 
     let (r_buffered_payloads_complete_cycle, r_buffered_payloads) = flow.cycle(&replicas);
-    let r_sorted_payloads = c_to_replicas
+    let r_sorted_payloads = p_to_replicas
         .tick_batch()
         .union(r_buffered_payloads) // Combine with all payloads that we've received and not processed yet
         .sort();
