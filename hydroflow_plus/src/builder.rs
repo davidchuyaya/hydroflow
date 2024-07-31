@@ -7,6 +7,7 @@ use std::time::Duration;
 use hydroflow::bytes::Bytes;
 use hydroflow::futures::stream::Stream as FuturesStream;
 use hydroflow::lattices::collections::MapMapValues;
+use hydroflow::{tokio, tokio_stream};
 use hydroflow_lang::graph::eliminate_extra_unions_tees;
 use proc_macro2::Span;
 use stageleft::*;
@@ -218,7 +219,7 @@ impl<'a, D: LocalDeploy<'a>> FlowBuilder<'a, D> {
         &self,
         on: &L,
         interval: impl Quoted<'a, Duration> + Copy + 'a,
-    ) -> Stream<'a, hydroflow::tokio::time::Instant, Async, L> {
+    ) -> Stream<'a, tokio::time::Instant, Async, L> {
         let interval = interval.splice();
 
         Stream::new(
@@ -229,6 +230,15 @@ impl<'a, D: LocalDeploy<'a>> FlowBuilder<'a, D> {
                 location_id: on.id(),
             },
         )
+    }
+
+    pub fn source_interval_delayed<L: Location + Clone>(
+        &self,
+        on: &L,
+        delay: impl Quoted<'a, Duration> + Copy + 'a,
+        interval: impl Quoted<'a, Duration> + Copy + 'a,
+    ) -> Stream<'a, tokio::time::Instant, Async, L>  {
+        self.source_stream(on, q!(tokio_stream::wrappers::IntervalStream::new(tokio::time::interval_at(tokio::time::Instant::now() + delay, interval))))
     }
 
     pub fn cycle<T, W, L: Location + Clone>(
