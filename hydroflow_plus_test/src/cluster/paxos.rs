@@ -496,7 +496,10 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
             if new_entry.ballot > curr_entry.ballot { // Update the log
                 *curr_entry = new_entry;
             }
-        })) // TODO: Would be nice if there was a "collect" operator here. Will need later to partition the log anyway
+        }))
+        .cross_product(p_to_acceptors_p1a.clone().tick_batch()) // TODO: Hack to avoid creating HashMap until we receive p1a
+        .map(q!(|t| t.0))
+        // TODO: Would be nice if there was a "collect" operator here. Will need later to partition the log anyway
         .fold(q!(|| HashMap::<i32, LogValue>::new()), q!(|log: &mut HashMap::<i32, LogValue>, (slot, p2a): (i32, P2a)| {
             log.insert(slot, LogValue { ballot: p2a.ballot, value: p2a.value });
         }));
