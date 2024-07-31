@@ -15,7 +15,7 @@ stageleft = { path = "../stageleft", version = "^0.3.0" }
 hydroflow_plus_cli_integration = { path = "../hydro_deploy/hydroflow_plus_cli_integration", version = "^0.8.0" }
 rand = "0.8.5"
 serde = { version = "1", features = [ "derive" ] }
-watermill = "0.1.0"
+watermill = "0.1.1"
 
 [build-dependencies]
 stageleft_tool = { path = "../stageleft_tool", version = "^0.2.0" }

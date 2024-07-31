@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
 use watermill::quantile::RollingQuantile;
@@ -148,13 +150,21 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .join(c_updated_timers)
         .map(q!(|(virtual_id, (prev_time, curr_time)): (usize, (SystemTime, SystemTime))| curr_time.duration_since(prev_time).unwrap().as_micros()))
         .all_ticks()
-        .fold(q!(|| RollingQuantile::<f64>::new(0.5_f64, *median_latency_window_size).unwrap()), q!(|latencies: &mut RollingQuantile<f64>, latency: u128| { // 0.5 quantile = median
-            latencies.update(latency as f64);
+        .fold(q!(|| (Rc::new(RefCell::new(RollingQuantile::<f64>::new(0.5_f64, *median_latency_window_size).unwrap())), false)), q!(|(latencies, has_any_value): &mut (Rc<RefCell<RollingQuantile<f64>>>, bool), latency: u128| { // 0.5 quantile = median
+            latencies.borrow_mut().update(latency as f64);
+            *has_any_value = true;
         }))
-        .map(q!(|latencies: RollingQuantile<f64>| latencies.get()));
+        .map(q!(|(latencies, has_any_value): (Rc<RefCell<RollingQuantile<f64>>>, bool)| {
+            if has_any_value {
+                latencies.borrow_mut().get()
+            }
+            else {
+                -1.0
+            }
+        }));
     let c_stats_output_timer_triggered = c_stats_output_timer
         .clone()
-        .bool_singleton(q!(|_: Instant| true));
+        .bool_singleton(q!(|_: ()| true));
     let c_throughput_new_batch = r_to_clients_payload_applied
         .clone()
         .tick_batch()
@@ -162,24 +172,28 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .continue_unless(c_stats_output_timer_triggered.clone())
         .map(q!(|batch_size: usize| (batch_size, false)));
     let c_throughput_reset = c_stats_output_timer_triggered
-        .map(q!(|_: bool| (0, true)));
+        .map(q!(|_: bool| (0, true)))
+        .defer_tick();
     let c_throughput = c_throughput_new_batch
         .union(c_throughput_reset)
         .all_ticks()
-        .fold(q!(|| 0), q!(|accum: &mut u32, (batch_size, reset): (usize, bool)| {
+        .fold(q!(|| (0,0)), q!(|(total, num_ticks): &mut (u32, u32), (batch_size, reset): (usize, bool)| {
             if reset {
-                *accum = 0;
+                *total = 0;
+                *num_ticks = 0;
             }
             else {
-                *accum += batch_size as u32;
+                *total += batch_size as u32;
+                *num_ticks += 1;
             }
         }));
-    let c_stats_output = c_stats_output_timer
+    c_stats_output_timer
         .cross_product(c_latencies)
         .cross_product(c_throughput)
-        .for_each(q!(|((_, latencies_us), throughput): ((Instant, f64), u32)| {
+        .for_each(q!(|((_, latencies_us), (throughput, num_ticks)): (((), f64), (u32, u32))| {
             println!("Median latency: {}ms", latencies_us / 1000.0);
             println!("Throughput: {} requests/s", throughput);
+            println!("Num ticks per second: {}", num_ticks);
         }));
     /* End track statistics */
 

@@ -219,7 +219,7 @@ impl<'a, D: LocalDeploy<'a>> FlowBuilder<'a, D> {
         &self,
         on: &L,
         interval: impl Quoted<'a, Duration> + Copy + 'a,
-    ) -> Stream<'a, tokio::time::Instant, Async, L> {
+    ) -> Stream<'a, (), Async, L> {
         let interval = interval.splice();
 
         Stream::new(
