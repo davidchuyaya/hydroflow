@@ -10,11 +10,11 @@ use quote::ToTokens;
 use syn::parse_quote;
 
 #[derive(Clone)]
-pub struct DebugExpr(pub syn::Expr);
+pub struct DebugExpr(pub Box<syn::Expr>);
 
 impl From<syn::Expr> for DebugExpr {
     fn from(expr: syn::Expr) -> DebugExpr {
-        DebugExpr(expr)
+        DebugExpr(Box::new(expr))
     }
 }
 

@@ -1560,6 +1560,7 @@ dependencies = [
  "futures",
  "hydro_deploy",
  "hydroflow",
+ "hydroflow_lang",
  "hydroflow_plus",
  "hydroflow_plus_cli_integration",
  "hydroflow_plus_test_macro",
