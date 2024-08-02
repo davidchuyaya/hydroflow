@@ -183,6 +183,7 @@ pub enum HfPlusNode {
 
     Union(Box<HfPlusNode>, Box<HfPlusNode>),
     CrossProduct(Box<HfPlusNode>, Box<HfPlusNode>),
+    ZipWithSingleton(Box<HfPlusNode>, Box<HfPlusNode>),
     Join(Box<HfPlusNode>, Box<HfPlusNode>),
     Difference(Box<HfPlusNode>, Box<HfPlusNode>),
     AntiJoin(Box<HfPlusNode>, Box<HfPlusNode>),
@@ -299,6 +300,10 @@ impl HfPlusNode {
                 Box::new(transform(*right, seen_tees)),
             ),
             HfPlusNode::CrossProduct(left, right) => HfPlusNode::CrossProduct(
+                Box::new(transform(*left, seen_tees)),
+                Box::new(transform(*right, seen_tees)),
+            ),
+            HfPlusNode::ZipWithSingleton(left, right) => HfPlusNode::ZipWithSingleton(
                 Box::new(transform(*left, seen_tees)),
                 Box::new(transform(*right, seen_tees)),
             ),
@@ -543,6 +548,39 @@ impl HfPlusNode {
                 (union_ident, left_location_id)
             }
 
+            HfPlusNode::ZipWithSingleton(left, right) => {
+                let (left_ident, left_location_id) =
+                    left.emit(graph_builders, built_tees, next_stmt_id);
+                let (right_ident, right_location_id) =
+                    right.emit(graph_builders, built_tees, next_stmt_id);
+
+                assert_eq!(
+                    left_location_id, right_location_id,
+                    "zip_with_singleton inputs must be in the same location"
+                );
+
+                let union_id = *next_stmt_id;
+                *next_stmt_id += 1;
+
+                let union_ident =
+                    syn::Ident::new(&format!("stream_{}", union_id), Span::call_site());
+
+                let builder = graph_builders.entry(left_location_id).or_default();
+                builder.add_statement(parse_quote! {
+                    #union_ident = zip_with_first();
+                });
+
+                builder.add_statement(parse_quote! {
+                    #left_ident -> [input]#union_ident;
+                });
+
+                builder.add_statement(parse_quote! {
+                    #right_ident -> [other]#union_ident;
+                });
+
+                (union_ident, left_location_id)
+            }
+
             HfPlusNode::CrossProduct(..) | HfPlusNode::Join(..) => {
                 let operator: syn::Ident = if matches!(self, HfPlusNode::CrossProduct(..)) {
                     parse_quote!(cross_join_multiset)
@@ -778,7 +816,7 @@ impl HfPlusNode {
 
                 let builder = graph_builders.entry(input_location_id).or_default();
                 builder.add_statement(parse_quote! {
-                    #defer_tick_ident = #input_ident -> defer_tick();
+                    #defer_tick_ident = #input_ident -> defer_tick_lazy();
                 });
 
                 (defer_tick_ident, input_location_id)

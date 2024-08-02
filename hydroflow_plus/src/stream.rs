@@ -162,6 +162,22 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         )
     }
 
+    pub fn zip_with_singleton<O>(self, other: Stream<'a, O, Windowed, N>) -> Stream<'a, (T, O), W, N>
+    where O: Clone {
+        if self.node.id() != other.node.id() {
+            panic!("zip_with_singleton must be called on streams on the same node");
+        }
+
+        Stream::new(
+            self.node,
+            self.ir_leaves,
+            HfPlusNode::ZipWithSingleton(
+                Box::new(self.ir_node.into_inner()),
+                Box::new(other.ir_node.into_inner()),
+            ),
+        )
+    }
+
     // TODO(shadaj): should allow for differing windows, using strongest one
     pub fn cross_product<O>(self, other: Stream<'a, O, W, N>) -> Stream<'a, (T, O), W, N>
     where T: Clone, O: Clone {
@@ -182,14 +198,8 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     // Allow this stream through if the other stream has elements. If the other stream is not a bool singleton, then the behavior is undefined.
     // TODO(david): Ask Shadaj if I can make the other stream's type generic O instead of bool. Rust complains right now that it can't infer the type
     pub fn continue_if<U>(self, signal: Stream<'a, U, Windowed, N>) -> Stream<'a, T, W, N> {
-        Stream::new(
-            self.node,
-            self.ir_leaves,
-            HfPlusNode::GateSignal(
-                Box::new(self.ir_node.into_inner()),
-                Box::new(signal.ir_node.into_inner()),
-            ),
-        )
+        self.zip_with_singleton(signal.map(q!(|_u| ())))
+            .map(q!(|(d, _signal)| d))
     }
 
     // Allow this stream through if the other stream is empty. If the other stream is not a bool singleton, then the behavior is undefined.
@@ -247,6 +257,10 @@ impl<'a, T, N: Location + Clone> Stream<'a, T, Async, N> {
 
 
 impl<'a, T, N: Location + Clone> Stream<'a, T, Windowed, N> {
+    pub fn cast_async(self) -> Stream<'a, T, Async, N> {
+        Stream::new(self.node, self.ir_leaves, self.ir_node.into_inner())
+    }
+
     pub fn sort(self) -> Stream<'a, T, Windowed, N>
      where T: Ord {
         Stream::new(
@@ -574,21 +588,9 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         T: Clone + Serialize + DeserializeOwned,
         N2::Id: Clone,
     {
-        let ids_spliced = other.ids().splice();
+        let ids = other.ids();
 
-        let other_ids = Stream::<'a, &N2::Id, Windowed, N>::new(
-            self.node.clone(),
-            self.ir_leaves.clone(),
-            HfPlusNode::Source {
-                source: HfPlusSource::Iter(ids_spliced.into()),
-                location_id: self.node.id(),
-            },
-        )
-        .cloned()
-        .all_ticks();
-
-        other_ids
-            .cross_product(self.assume_windowed())
+        self.flat_map(q!(|b| ids.iter().map(move |id| (id.clone(), b.clone()))))
             .send_bincode(other)
     }
 
@@ -614,21 +616,9 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         N2::Id: Clone,
         T: Clone,
     {
-        let ids_spliced = other.ids().splice();
+        let ids = other.ids();
 
-        let other_ids = Stream::<'a, &N2::Id, Windowed, N>::new(
-            self.node.clone(),
-            self.ir_leaves.clone(),
-            HfPlusNode::Source {
-                source: HfPlusSource::Iter(ids_spliced.into()),
-                location_id: self.node.id(),
-            },
-        )
-        .cloned()
-        .all_ticks();
-
-        other_ids
-            .cross_product(self.assume_windowed())
+        self.flat_map(q!(|b| ids.iter().map(move |id| (id.clone(), b.clone()))))
             .send_bytes(other)
     }
 

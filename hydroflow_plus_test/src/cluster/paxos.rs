@@ -117,7 +117,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let c_new_payloads_when_committed = r_to_clients_payload_applied
         .clone()
         .tick_batch()
-        .cross_product(c_max_leader_ballot.clone())
+        .zip_with_singleton(c_max_leader_ballot.clone())
         .map(q!(|(payload, leader_ballot): (ReplicaPayload, Ballot)| (leader_ballot.id, ClientPayload { key: payload.key, value: payload.value })));
     let c_to_proposers = c_new_payloads_when_leader_elected
         .union(c_new_payloads_when_committed)
@@ -146,19 +146,29 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
 
     let c_stats_output_timer = flow.source_interval(&clients, q!(Duration::from_secs(1)))
         .tick_batch();
+
+    let c_latency_reset = c_stats_output_timer
+        .clone()
+        .map(q!(|_: ()| None))
+        .defer_tick();
+
     let c_latencies = c_timers
         .join(c_updated_timers)
-        .map(q!(|(virtual_id, (prev_time, curr_time)): (usize, (SystemTime, SystemTime))| curr_time.duration_since(prev_time).unwrap().as_micros()))
+        .map(q!(|(virtual_id, (prev_time, curr_time)): (usize, (SystemTime, SystemTime))| Some(curr_time.duration_since(prev_time).unwrap().as_micros())))
+        .union(c_latency_reset)
         .all_ticks()
-        .fold(q!(|| (Rc::new(RefCell::new(RollingQuantile::<f64>::new(0.5_f64, *median_latency_window_size).unwrap())), false)), q!(|(latencies, has_any_value): &mut (Rc<RefCell<RollingQuantile<f64>>>, bool), latency: u128| { // 0.5 quantile = median
-            latencies.borrow_mut().update(latency as f64);
-            *has_any_value = true;
+        .fold(q!(|| (Rc::new(RefCell::new(RollingQuantile::<f64>::new(0.5_f64, *median_latency_window_size).unwrap())), false)), q!(|(latencies, has_any_value): &mut (Rc<RefCell<RollingQuantile<f64>>>, bool), latency: Option<u128>| { // 0.5 quantile = median
+            if let Some(latency) = latency {
+                latencies.borrow_mut().update(latency as f64);
+                *has_any_value = true;
+            } else {
+                *latencies.borrow_mut() = RollingQuantile::<f64>::new(0.5_f64, *median_latency_window_size).unwrap();
+            }
         }))
         .map(q!(|(latencies, has_any_value): (Rc<RefCell<RollingQuantile<f64>>>, bool)| {
             if has_any_value {
                 latencies.borrow_mut().get()
-            }
-            else {
+            } else {
                 -1.0
             }
         }));
@@ -168,10 +178,12 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .count()
         .continue_unless(c_stats_output_timer.clone())
         .map(q!(|batch_size: usize| (batch_size, false)));
+
     let c_throughput_reset = c_stats_output_timer
         .clone()
         .map(q!(|_: ()| (0, true)))
         .defer_tick();
+
     let c_throughput = c_throughput_new_batch
         .union(c_throughput_reset)
         .all_ticks()
@@ -186,8 +198,8 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
             }
         }));
     c_stats_output_timer
-        .cross_product(c_latencies)
-        .cross_product(c_throughput)
+        .zip_with_singleton(c_latencies)
+        .zip_with_singleton(c_throughput)
         .for_each(q!(|((_, latencies_us), (throughput, num_ticks)): (((), f64), (u32, u32))| {
             println!("Median latency: {}ms", latencies_us / 1000.0);
             println!("Throughput: {} requests/s", throughput);
@@ -234,7 +246,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         }));
     let p_has_largest_ballot = p_received_max_ballot
         .clone()
-        .cross_product(p_ballot_num.clone())
+        .zip_with_singleton(p_ballot_num.clone())
         .filter(q!(move |(received_max_ballot, ballot_num): &(Ballot, u32)| *received_max_ballot <= Ballot { num: *ballot_num, id: p_id }));
 
     let p_to_proposers_i_am_leader_new = p_ballot_num
@@ -253,7 +265,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     // Add random delay depending on node ID so not everyone sends p1a at the same time
     let p_leader_expired = flow.source_interval_delayed(&proposers, q!(Duration::from_secs((p_id * *i_am_leader_check_timeout_delay_multiplier as u32).into())), q!(*i_am_leader_check_timeout))
         .tick_batch()
-        .cross_product(p_latest_received_i_am_leader.clone())
+        .zip_with_singleton(p_latest_received_i_am_leader.clone())
         // .inspect(q!(|v| println!("Proposer checking if leader expired")))
         // .continue_if(p_is_leader.clone().count().filter(q!(|c| *c == 0)).inspect(q!(|c| println!("Proposer is_leader count: {}", c))))
         .continue_unless(p_is_leader.clone())
@@ -268,7 +280,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
 
     let p_new_ballot_num = p_received_max_ballot
         .clone()
-        .cross_product(p_ballot_num.clone())
+        .zip_with_singleton(p_ballot_num.clone())
         .map(q!(move |(received_max_ballot, ballot_num): (Ballot, u32)| {
             if received_max_ballot > (Ballot { num: ballot_num, id: p_id }) {
                 received_max_ballot.num + 1
@@ -287,7 +299,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let p_relevant_p1bs = a_to_proposers_p1b
         .clone()
         .all_ticks()
-        .cross_product(p_ballot_num.clone())
+        .zip_with_singleton(p_ballot_num.clone())
         .filter(q!(move |((sender, p1b), ballot_num): &((u32, P1b), u32)| p1b.ballot == Ballot { num: *ballot_num, id: p_id}));
     let p_received_quorum_of_p1bs = p_relevant_p1bs
         .clone()
@@ -326,7 +338,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         }));
     let p_log_to_try_commit = p_p1b_highest_entries_and_count
         .clone()
-        .cross_product(p_ballot_num.clone())
+        .zip_with_singleton(p_ballot_num.clone())
         .filter_map(q!(move |((slot, (count, entry)), ballot_num): ((i32, (u32, LogValue)), u32)|
             if count <= *f as u32 { 
                 Some(P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: slot, value: entry.value})
@@ -348,7 +360,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .clone()
         .flat_map(q!(|max_slot: i32| 0..max_slot))
         .filter_not_in(p_proposed_slots)
-        .cross_product(p_ballot_num.clone())
+        .zip_with_singleton(p_ballot_num.clone())
         .map(q!(move |(slot, ballot_num): (i32, u32)| P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: slot, value: ClientPayload { key: 0, value: 0 } }));
         
         let context = flow.runtime_context();
@@ -365,9 +377,9 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .clone()
         .tick_batch()
         .enumerate()
-        .cross_product(p_next_slot.clone())
+        .zip_with_singleton(p_next_slot.clone())
         // .inspect(q!(|next| println!("{} p_indexed_payloads next slot: {}", context.current_tick(), next))))
-        .cross_product(p_ballot_num.clone())
+        .zip_with_singleton(p_ballot_num.clone())
         // .inspect(q!(|ballot_num| println!("{} p_indexed_payloads ballot_num: {}", context.current_tick(), ballot_num))))
         .map(q!(move |(((index, payload), next_slot), ballot_num): (((usize, ClientPayload), i32), u32)| P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: next_slot + index as i32, value: payload }));
         // .inspect(q!(|p2a: &P2a| println!("{} p_indexed_payloads P2a: {:?}", context.current_tick(), p2a)));
@@ -388,7 +400,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let p_next_slot_after_sending_payloads = p_num_payloads
         .continue_if(p_exists_payloads.clone())
         .clone()
-        .cross_product(p_next_slot.clone())
+        .zip_with_singleton(p_next_slot.clone())
         .map(q!(|(num_payloads, next_slot): (usize, i32)| next_slot + num_payloads as i32));
     let p_next_slot_if_no_payloads = p_next_slot
         .clone()
@@ -414,7 +426,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     /* Tell clients that leader election has completed and they can begin sending messages */
     let p_to_clients_new_leader_elected = p_is_leader.clone()
         .continue_unless(p_next_slot.clone())
-        .cross_product(p_ballot_num.clone())
+        .zip_with_singleton(p_ballot_num.clone())
         .map(q!(|(is_leader, ballot_num): (bool, u32)| ballot_num)) // Only tell the clients once when leader election concludes
         .broadcast_bincode(&clients);
     p_to_clients_leader_elected_cycle.complete(p_to_clients_new_leader_elected);
@@ -498,7 +510,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let a_log = p_to_acceptors_p2a
         .clone()
         .tick_batch()
-        .cross_product(a_max_ballot.clone())
+        .zip_with_singleton(a_max_ballot.clone())
         .filter(q!(|(p2a, max_ballot): &(P2a, Ballot)| p2a.ballot >= *max_ballot)) // Don't consider p2as if the current ballot is higher
         .map(q!(|(p2a, _): (P2a, Ballot)| (p2a.slot, p2a))) // Group by slot
         .all_ticks()
@@ -507,8 +519,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
                 *curr_entry = new_entry;
             }
         }))
-        .cross_product(p_to_acceptors_p1a.clone().tick_batch()) // TODO: Hack to avoid creating HashMap until we receive p1a
-        .map(q!(|t| t.0))
+        .continue_if(p_to_acceptors_p1a.clone().tick_batch()) // TODO: Hack to avoid creating HashMap until we receive p1a
         // TODO: Would be nice if there was a "collect" operator here. Will need later to partition the log anyway
         .fold(q!(|| HashMap::<i32, LogValue>::new()), q!(|log: &mut HashMap::<i32, LogValue>, (slot, p2a): (i32, P2a)| {
             log.insert(slot, LogValue { ballot: p2a.ballot, value: p2a.value });
@@ -517,15 +528,15 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let a_to_proposers_p1b_new = p_to_acceptors_p1a
         .clone()
         .tick_batch()
-        .cross_product(a_max_ballot.clone())
-        .cross_product(a_log)
+        .zip_with_singleton(a_max_ballot.clone())
+        .zip_with_singleton(a_log)
         .map(q!(|((p1a, max_ballot), log): ((P1a, Ballot), HashMap::<i32, LogValue>)| (p1a.ballot.id, P1b { ballot: p1a.ballot, max_ballot: max_ballot, accepted: log })))
         .send_bincode(&proposers);
     a_to_proposers_p1b_complete_cycle.complete(a_to_proposers_p1b_new);
 
     let a_to_proposers_p2b_new: Stream<(u32, P2b), stream::Async, <D as Deploy<'a>>::Cluster> = p_to_acceptors_p2a
         .tick_batch()
-        .cross_product(a_max_ballot.clone())
+        .zip_with_singleton(a_max_ballot.clone())
         .map(q!(|(p2a, max_ballot): (P2a, Ballot)| (p2a.ballot.id, P2b { ballot: p2a.ballot, max_ballot: max_ballot, slot: p2a.slot, value: p2a.value })))
         .send_bincode(&proposers);
     a_to_proposers_p2b_complete_cycle.complete(a_to_proposers_p2b_new);
@@ -550,7 +561,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     // Find highest the sequence number of any payload that can be processed in this tick. This is the payload right before a hole.
     let r_highest_seq_processable_payload = r_sorted_payloads
         .clone()
-        .cross_product(r_highest_seq_with_default)
+        .zip_with_singleton(r_highest_seq_with_default)
         .fold(q!(|| -1), q!(| filled_slot: &mut i32, (sorted_payload, highest_seq): (ReplicaPayload, i32)| { // Note: This function only works if the input is sorted on seq.
             let next_slot = std::cmp::max(*filled_slot, highest_seq);
 
@@ -563,12 +574,12 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     // Find all payloads that can and cannot be processed in this tick.
     let r_processable_payloads = r_sorted_payloads
         .clone()
-        .cross_product(r_highest_seq_processable_payload.clone())
+        .zip_with_singleton(r_highest_seq_processable_payload.clone())
         .filter(q!(|(sorted_payload, highest_seq): &(ReplicaPayload, i32)| sorted_payload.seq <= *highest_seq))
         .map(q!(|(sorted_payload, _): (ReplicaPayload, i32)| sorted_payload));
     let r_new_non_processable_payloads = r_sorted_payloads
         .clone()
-        .cross_product(r_highest_seq_processable_payload.clone())
+        .zip_with_singleton(r_highest_seq_processable_payload.clone())
         .filter(q!(|(sorted_payload, highest_seq): &(ReplicaPayload, i32)| sorted_payload.seq > *highest_seq))
         .map(q!(|(sorted_payload, _): (ReplicaPayload, i32)| sorted_payload))
         .defer_tick(); // Save these, we can process them once the hole has been filled

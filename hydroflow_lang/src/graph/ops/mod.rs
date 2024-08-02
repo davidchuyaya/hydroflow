@@ -395,6 +395,7 @@ declare_ops![
     unzip::UNZIP,
     zip::ZIP,
     zip_longest::ZIP_LONGEST,
+    zip_with_first::ZIP_WITH_FIRST,
 ];
 
 /// Get the operator lookup table, generating it if needed.
