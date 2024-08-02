@@ -15,14 +15,14 @@ use serde::{Serialize, Deserialize};
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
 struct ClientPayload {
     key: u32,
-    value: String,
+    value: u32,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 struct ReplicaPayload { // Note: Important that seq is the first member of the struct for sorting
     seq: i32,
     key: u32,
-    value: String,
+    value: u32,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Hash)]
@@ -112,7 +112,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     // Whenever the leader changes, make all clients send a message
     let c_new_payloads_when_leader_elected = c_new_leader_ballot
         .clone()
-        .flat_map(q!(move |leader_ballot: Ballot| (0..*num_clients_per_node).map(move |i| (leader_ballot.id, ClientPayload { key: i as u32, value: c_id.to_string() }))));
+        .flat_map(q!(move |leader_ballot: Ballot| (0..*num_clients_per_node).map(move |i| (leader_ballot.id, ClientPayload { key: i as u32, value: c_id }))));
     // Whenever replicas confirm that a payload was committed, send another payload
     let c_new_payloads_when_committed = r_to_clients_payload_applied
         .clone()
@@ -307,7 +307,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let p_p1b_highest_entries_and_count = p_relevant_p1bs
         .clone()
         .flat_map(q!(|((_, p1b), _): ((u32, P1b), u32)| p1b.accepted.into_iter())) // Convert HashMap log back to stream
-        .fold_keyed(q!(|| (0, LogValue { ballot: Ballot { num: 0, id: 0 }, value: ClientPayload { key: 0, value: "".to_string() } })), q!(|curr_entry: &mut (u32, LogValue), new_entry: LogValue| {
+        .fold_keyed(q!(|| (0, LogValue { ballot: Ballot { num: 0, id: 0 }, value: ClientPayload { key: 0, value: 123456 } })), q!(|curr_entry: &mut (u32, LogValue), new_entry: LogValue| {
             let same_values = new_entry.value == curr_entry.1.value;
             let higher_ballot = new_entry.ballot > curr_entry.1.ballot;
             // Increment count if the values are the same
@@ -336,7 +336,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
             }));
     let p_max_slot = p_p1b_highest_entries_and_count
         .clone()
-        .fold(q!(|| 0), q!(|max_slot: &mut i32, (slot, (count, entry)): (i32, (u32, LogValue))| {
+        .fold(q!(|| -1), q!(|max_slot: &mut i32, (slot, (count, entry)): (i32, (u32, LogValue))| {
             if slot > *max_slot {
                 *max_slot = slot;
             }
@@ -349,7 +349,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .flat_map(q!(|max_slot: i32| 0..max_slot))
         .filter_not_in(p_proposed_slots)
         .cross_product(p_ballot_num.clone())
-        .map(q!(move |(slot, ballot_num): (i32, u32)| P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: slot, value: ClientPayload { key: 0, value: "".to_string() } }));
+        .map(q!(move |(slot, ballot_num): (i32, u32)| P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: slot, value: ClientPayload { key: 0, value: 0 } }));
         
         let context = flow.runtime_context();
     let (p_next_slot_complete_cycle, p_next_slot) = flow.cycle(&proposers);
@@ -405,10 +405,10 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .continue_unless(p_new_next_slot_calculated.clone())
         .map(q!(|_: bool| 0));
         // .inspect(q!(|slot| println!("{} p_new_next_slot_default: {:?}", context.current_tick(), slot)));
-    let p_new_nex_slot = p_new_next_slot_calculated
+    let p_new_next_slot = p_new_next_slot_calculated
         .union(p_new_next_slot_default)
         .defer_tick();
-    p_next_slot_complete_cycle.complete(p_new_nex_slot);
+    p_next_slot_complete_cycle.complete(p_new_next_slot);
     /* End send p2as */
 
     /* Tell clients that leader election has completed and they can begin sending messages */
@@ -437,7 +437,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
                 None
             }
         ))
-        .fold_keyed(q!(|| (0, P2b { ballot: Ballot { num: 0, id: 0 }, max_ballot: Ballot { num: 0, id: 0 }, slot: 0, value: ClientPayload { key: 0, value: "".to_string() } } )),
+        .fold_keyed(q!(|| (0, P2b { ballot: Ballot { num: 0, id: 0 }, max_ballot: Ballot { num: 0, id: 0 }, slot: 0, value: ClientPayload { key: 0, value: 0 } } )),
             q!(|accum: &mut (usize, P2b), (sender, p2b): (u32, P2b)| {
             accum.0 += 1;
             accum.1 = p2b;
@@ -577,7 +577,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let r_kv_store = r_processable_payloads
         .clone()
         .all_ticks() // Optimization: all_ticks() + fold() = fold<static>, where the state of the previous fold is saved and persisted values are deleted.
-        .fold(q!(|| (HashMap::<u32, String>::new(), -1)), q!(|state: &mut (HashMap::<u32, String>, i32), payload: ReplicaPayload| {
+        .fold(q!(|| (HashMap::<u32, u32>::new(), -1)), q!(|state: &mut (HashMap::<u32, u32>, i32), payload: ReplicaPayload| {
             let ref mut kv_store = state.0;
             let ref mut last_seq = state.1;
             kv_store.insert(payload.key, payload.value);
@@ -587,15 +587,14 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         }));
     // Update the highest seq for the next tick
     let r_new_highest_seq = r_kv_store
-        .clone()
-        .map(q!(|(kv_store, highest_seq): (HashMap::<u32, String>, i32)| highest_seq))
+        .map(q!(|(kv_store, highest_seq): (HashMap::<u32, u32>, i32)| highest_seq))
         .defer_tick();
     r_highest_seq_complete_cycle.complete(r_new_highest_seq);
 
     // Tell clients that the payload has been committed. All ReplicaPayloads contain the client's machine ID (to string) as value.
     let r_new_processed_payloads = p_to_replicas
         .tick_batch()
-        .map(q!(|payload: ReplicaPayload| (payload.value.parse::<u32>().unwrap(), payload)))
+        .map(q!(|payload: ReplicaPayload| (payload.value, payload)))
         .send_bincode_interleaved(&clients);
     r_to_clients_payload_applied_cycle.complete(r_new_processed_payloads);
 
