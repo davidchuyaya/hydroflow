@@ -2,9 +2,10 @@ use quote::quote_spanned;
 use syn::parse_quote;
 
 use super::{
-    DelayType, OperatorCategory, OperatorConstraints, OperatorWriteOutput,
-    WriteContextArgs, RANGE_0, RANGE_1,
+    DelayType, OpInstGenerics, OperatorCategory, OperatorConstraints, OperatorInstance,
+    OperatorWriteOutput, Persistence, WriteContextArgs, RANGE_0, RANGE_1,
 };
+use crate::diagnostic::{Diagnostic, Level};
 
 /// > 2 input streams, 1 output stream, no arguments.
 ///
@@ -25,7 +26,7 @@ use super::{
 pub const DEFER_SIGNAL: OperatorConstraints = OperatorConstraints {
     name: "defer_signal",
     categories: &[OperatorCategory::Persistence],
-    persistence_args: RANGE_0,
+    persistence_args: RANGE_1,
     type_args: RANGE_0,
     hard_range_inn: &(2..=2),
     soft_range_inn: &(2..=2),
@@ -45,40 +46,74 @@ pub const DEFER_SIGNAL: OperatorConstraints = OperatorConstraints {
                    op_span,
                    inputs,
                    is_pull,
+                   op_name,
+                   op_inst:
+                       OperatorInstance {
+                           generics:
+                               OpInstGenerics {
+                                   persistence_args, ..
+                               },
+                           ..
+                       },
                    ..
                },
-               _| {
+               diagnostics| {
         assert!(is_pull);
 
-        let internal_buffer = wc.make_ident("internal_buffer");
-        let borrow_ident = wc.make_ident("borrow_ident");
-
-        let write_prologue = quote_spanned! {op_span=>
-            let #internal_buffer = #hydroflow.add_state(::std::cell::RefCell::new(::std::vec::Vec::new()));
+        let persistence = match persistence_args[..] {
+            [] => Persistence::Tick,
+            [Persistence::Mutable] => {
+                diagnostics.push(Diagnostic::spanned(
+                    op_span,
+                    Level::Error,
+                    format!("{} does not support `'mut`.", op_name),
+                ));
+                Persistence::Tick
+            }
+            [a] => a,
+            _ => unreachable!(),
         };
 
         let input = &inputs[0];
         let signal = &inputs[1];
 
-        let write_iterator = {
-            quote_spanned! {op_span=>
+        let (write_prologue, write_iterator) = if Persistence::Tick == persistence {
+            (
+                Default::default(),
+                quote_spanned! {op_span=>
+                    let #ident = if #signal.count() > 0 {
+                        ::std::option::Option::Some(#input)
+                    } else {
+                        ::std::option::Option::None
+                    }.into_iter().flatten();
+                },
+            )
+        } else {
+            let internal_buffer = wc.make_ident("internal_buffer");
+            let borrow_ident = wc.make_ident("borrow_ident");
 
-                let mut #borrow_ident = #context.state_ref(#internal_buffer).borrow_mut();
+            (
+                quote_spanned! {op_span=>
+                    let #internal_buffer = #hydroflow.add_state(::std::cell::RefCell::new(::std::vec::Vec::new()));
+                },
+                quote_spanned! {op_span=>
 
-                #borrow_ident.extend(#input);
+                    let mut #borrow_ident = #context.state_ref(#internal_buffer).borrow_mut();
 
-                let #ident = if #signal.count() > 0 {
-                    ::std::option::Option::Some(#borrow_ident.drain(..))
-                } else {
-                    ::std::option::Option::None
-                }.into_iter().flatten();
-            }
+                    #borrow_ident.extend(#input);
+
+                    let #ident = if #signal.count() > 0 {
+                        ::std::option::Option::Some(#borrow_ident.drain(..))
+                    } else {
+                        ::std::option::Option::None
+                    }.into_iter().flatten();
+                },
+            )
         };
 
         Ok(OperatorWriteOutput {
             write_prologue,
             write_iterator,
-            write_iterator_after: Default::default(),
             ..Default::default()
         })
     },

@@ -163,7 +163,8 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     }
 
     // TODO(shadaj): should allow for differing windows, using strongest one
-    pub fn cross_product<O>(self, other: Stream<'a, O, W, N>) -> Stream<'a, (T, O), W, N> {
+    pub fn cross_product<O>(self, other: Stream<'a, O, W, N>) -> Stream<'a, (T, O), W, N>
+    where T: Clone, O: Clone {
         if self.node.id() != other.node.id() {
             panic!("cross_product must be called on streams on the same node");
         }
@@ -178,23 +179,22 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         )
     }
 
-    // If the condition is true, then the stream contains "true". Otherwise, it is empty. If the stream is not a singleton, then the behavior is undefined.
-    pub fn bool_singleton<F: Fn(T) -> bool + 'a>(
-        self,
-        f: impl IntoQuotedMut<'a, F>,
-    ) -> Stream<'a, bool, W, N> {
-        self.map(f).filter(q!(|b| *b))
-    }
-
     // Allow this stream through if the other stream has elements. If the other stream is not a bool singleton, then the behavior is undefined.
     // TODO(david): Ask Shadaj if I can make the other stream's type generic O instead of bool. Rust complains right now that it can't infer the type
-    pub fn continue_if(self, other: Stream<'a, bool, W, N>) -> Stream<'a, T, W, N> {
-        self.cross_product(other).map(q!(|(a, _)| a))
+    pub fn continue_if<U>(self, signal: Stream<'a, U, Windowed, N>) -> Stream<'a, T, W, N> {
+        Stream::new(
+            self.node,
+            self.ir_leaves,
+            HfPlusNode::GateSignal(
+                Box::new(self.ir_node.into_inner()),
+                Box::new(signal.ir_node.into_inner()),
+            ),
+        )
     }
 
     // Allow this stream through if the other stream is empty. If the other stream is not a bool singleton, then the behavior is undefined.
-    pub fn continue_unless(self, other: Stream<'a, bool, W, N>) -> Stream<'a, T, W, N> {
-        self.map(q!(|a| ((), a))).anti_join(other.map(q!(|_| ()))).map(q!(|(_, a)| a))
+    pub fn continue_unless<U>(self, other: Stream<'a, U, Windowed, N>) -> Stream<'a, T, W, N> {
+        self.continue_if(other.count().filter(q!(|c| *c == 0)))
     }
 
     pub fn union(self, other: Stream<'a, T, W, N>) -> Stream<'a, T, W, N> {
@@ -342,7 +342,7 @@ impl<'a, T, N: Location + Clone> Stream<'a, T, Windowed, N> {
             },
         );
 
-        self.cross_product(samples).map(q!(|(a, _)| a))
+        self.continue_if(samples)
     }
 }
 
@@ -356,7 +356,8 @@ impl<'a, K, V1, W, N: Location + Clone> Stream<'a, (K, V1), W, N> {
     // TODO(shadaj): figure out window semantics
     pub fn join<W2, V2>(self, n: Stream<'a, (K, V2), W2, N>) -> Stream<'a, (K, (V1, V2)), W, N>
     where
-        K: Eq + Hash,
+        K: Clone + Eq + Hash,
+        V1: Clone, V2: Clone
     {
         if self.node.id() != n.node.id() {
             panic!("join must be called on streams on the same node");
@@ -570,7 +571,7 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     ) -> Stream<'a, N::Out<T>, Async, N2>
     where
         N: HfSend<N2, V, In<T> = (N2::Id, T)>,
-        T: Serialize + DeserializeOwned,
+        T: Clone + Serialize + DeserializeOwned,
         N2::Id: Clone,
     {
         let ids_spliced = other.ids().splice();
@@ -599,6 +600,7 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         N: HfSend<N2, V, In<T> = (N2::Id, T), Out<T> = (Tag, T)>,
         T: Serialize + DeserializeOwned,
         N2::Id: Clone,
+        T: Clone,
     {
         self.broadcast_bincode(other).map(q!(|(_, b)| b))
     }
@@ -610,6 +612,7 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     where
         N: HfSend<N2, V, In<Bytes> = (N2::Id, T)>,
         N2::Id: Clone,
+        T: Clone,
     {
         let ids_spliced = other.ids().splice();
 
@@ -636,6 +639,7 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     where
         N: HfSend<N2, V, In<Bytes> = (N2::Id, T), Out<Bytes> = (Tag, Bytes)>,
         N2::Id: Clone,
+        T: Clone,
     {
         self.broadcast_bytes(other).map(q!(|(_, b)| b))
     }

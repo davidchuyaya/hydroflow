@@ -162,17 +162,15 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
                 -1.0
             }
         }));
-    let c_stats_output_timer_triggered = c_stats_output_timer
-        .clone()
-        .bool_singleton(q!(|_: ()| true));
     let c_throughput_new_batch = r_to_clients_payload_applied
         .clone()
         .tick_batch()
         .count()
-        .continue_unless(c_stats_output_timer_triggered.clone())
+        .continue_unless(c_stats_output_timer.clone())
         .map(q!(|batch_size: usize| (batch_size, false)));
-    let c_throughput_reset = c_stats_output_timer_triggered
-        .map(q!(|_: bool| (0, true)))
+    let c_throughput_reset = c_stats_output_timer
+        .clone()
+        .map(q!(|_: ()| (0, true)))
         .defer_tick();
     let c_throughput = c_throughput_new_batch
         .union(c_throughput_reset)
@@ -216,6 +214,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let (a_to_proposers_p2b_complete_cycle, a_to_proposers_p2b) = flow.cycle(&proposers);
     // a_to_proposers_p2b.clone().for_each(q!(|(_, p2b): (u32, P2b)| println!("Proposer received P2b: {:?}", p2b)));
     // p_to_proposers_i_am_leader.clone().for_each(q!(|ballot: Ballot| println!("Proposer received I am leader: {:?}", ballot)));
+    // c_to_proposers.clone().for_each(q!(|payload: ClientPayload| println!("Client sent proposer payload: {:?}", payload)));
 
     /* Stable leader election */
     let p_received_p1b_ballots = a_to_proposers_p1b
@@ -236,7 +235,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let p_has_largest_ballot = p_received_max_ballot
         .clone()
         .cross_product(p_ballot_num.clone())
-        .bool_singleton(q!(move |(received_max_ballot, ballot_num): (Ballot, u32)| received_max_ballot <= Ballot { num: ballot_num, id: p_id }));
+        .filter(q!(move |(received_max_ballot, ballot_num): &(Ballot, u32)| *received_max_ballot <= Ballot { num: *ballot_num, id: p_id }));
 
     let p_to_proposers_i_am_leader_new = p_ballot_num
         .clone()
@@ -255,8 +254,11 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let p_leader_expired = flow.source_interval_delayed(&proposers, q!(Duration::from_secs((p_id * *i_am_leader_check_timeout_delay_multiplier as u32).into())), q!(*i_am_leader_check_timeout))
         .tick_batch()
         .cross_product(p_latest_received_i_am_leader.clone())
+        // .inspect(q!(|v| println!("Proposer checking if leader expired")))
+        // .continue_if(p_is_leader.clone().count().filter(q!(|c| *c == 0)).inspect(q!(|c| println!("Proposer is_leader count: {}", c))))
         .continue_unless(p_is_leader.clone())
-        .bool_singleton(q!(|(_, latest_received_i_am_leader): (Instant, SystemTime)| SystemTime::now() - *i_am_leader_check_timeout > latest_received_i_am_leader));
+        .filter(q!(|(_, latest_received_i_am_leader): &(Instant, SystemTime)| SystemTime::now() - *i_am_leader_check_timeout > *latest_received_i_am_leader));
+    // p_leader_expired.clone().for_each(q!(|_| println!("Proposer leader expired")));
 
     let p_to_acceptors_p1a = p_ballot_num
         .clone()
@@ -292,7 +294,12 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .map(q!(|((sender, p1b), ballot_num): ((u32, P1b), u32)| sender))
         .unique()
         .count()
-        .bool_singleton(q!(|num_received: usize| num_received > *f));
+        .filter_map(q!(|num_received: usize| if num_received > *f {
+            Some(true)
+        } 
+        else {
+            None
+        }));
     let p_is_leader_new = p_received_quorum_of_p1bs
         .continue_if(p_has_largest_ballot.clone());
     p_is_leader_complete_cycle.complete(p_is_leader_new);
@@ -344,9 +351,12 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .cross_product(p_ballot_num.clone())
         .map(q!(move |(slot, ballot_num): (i32, u32)| P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: slot, value: ClientPayload { key: 0, value: "".to_string() } }));
         
+        let context = flow.runtime_context();
     let (p_next_slot_complete_cycle, p_next_slot) = flow.cycle(&proposers);
     let p_next_slot_after_reconciling_p1bs = p_max_slot
+        // .inspect(q!(|max_slot| println!("{} p_max_slot: {:?}", context.current_tick(), max_slot)))
         .clone()
+        .continue_unless(p_next_slot.clone())
         .map(q!(|max_slot: i32| max_slot + 1));
     /* End reconcile p1b log with local log */
 
@@ -356,14 +366,14 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .tick_batch()
         .enumerate()
         .cross_product(p_next_slot.clone())
+        // .inspect(q!(|next| println!("{} p_indexed_payloads next slot: {}", context.current_tick(), next))))
         .cross_product(p_ballot_num.clone())
+        // .inspect(q!(|ballot_num| println!("{} p_indexed_payloads ballot_num: {}", context.current_tick(), ballot_num))))
         .map(q!(move |(((index, payload), next_slot), ballot_num): (((usize, ClientPayload), i32), u32)| P2a { ballot: Ballot { num: ballot_num, id: p_id }, slot: next_slot + index as i32, value: payload }));
-    let p_next_slot_exists = p_next_slot
-        .clone()
-        .map(q!(|_: i32| true));
+        // .inspect(q!(|p2a: &P2a| println!("{} p_indexed_payloads P2a: {:?}", context.current_tick(), p2a)));
     let p_to_acceptors_p2a = p_log_to_try_commit
         .union(p_log_holes)
-        .continue_unless(p_next_slot_exists.clone()) // Only resend p1b stuff once. Once it's resent, next_slot will exist.
+        .continue_unless(p_next_slot.clone()) // Only resend p1b stuff once. Once it's resent, next_slot will exist.
         .union(p_indexed_payloads)
         .continue_if(p_is_leader.clone())
         .broadcast_bincode_interleaved(&acceptors);
@@ -372,29 +382,29 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .clone()
         .tick_batch()
         .count();
+    let p_exists_payloads = p_num_payloads
+        .clone()
+        .filter(q!(|num_payloads: &usize| *num_payloads > 0));
     let p_next_slot_after_sending_payloads = p_num_payloads
+        .continue_if(p_exists_payloads.clone())
         .clone()
         .cross_product(p_next_slot.clone())
         .map(q!(|(num_payloads, next_slot): (usize, i32)| next_slot + num_payloads as i32));
-    let p_exists_payloads = p_num_payloads
-        .clone()
-        .bool_singleton(q!(|num_payloads: usize| num_payloads > 0));
     let p_next_slot_if_no_payloads = p_next_slot
         .clone()
         .continue_unless(p_exists_payloads);
-    let p_next_slot_if_no_payloads_ever = p_max_slot
-        .filter(q!(|max_slot: &i32| *max_slot == 0));
     let p_new_next_slot_calculated = p_next_slot_after_reconciling_p1bs
+        // .inspect(q!(|slot| println!("{} p_new_next_slot_after_reconciling_p1bs: {:?}", context.current_tick(), slot)))
         .union(p_next_slot_after_sending_payloads)
+        // .inspect(q!(|slot| println!("{} p_next_slot_after_sending_payloads: {:?}", context.current_tick(), slot))))
         .union(p_next_slot_if_no_payloads)
+        // .inspect(q!(|slot| println!("{} p_next_slot_if_no_payloads: {:?}", context.current_tick(), slot))))
         .continue_if(p_is_leader.clone());
-    let p_new_next_slot_calculated_exists = p_new_next_slot_calculated
-        .clone()
-        .bool_singleton(q!(|next_slot: i32| true));
     let p_new_next_slot_default = p_is_leader // Default next slot to 0 if there haven't been any payloads at all
         .clone()
-        .continue_unless(p_new_next_slot_calculated_exists)
+        .continue_unless(p_new_next_slot_calculated.clone())
         .map(q!(|_: bool| 0));
+        // .inspect(q!(|slot| println!("{} p_new_next_slot_default: {:?}", context.current_tick(), slot)));
     let p_new_nex_slot = p_new_next_slot_calculated
         .union(p_new_next_slot_default)
         .defer_tick();
@@ -403,7 +413,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
 
     /* Tell clients that leader election has completed and they can begin sending messages */
     let p_to_clients_new_leader_elected = p_is_leader.clone()
-        .continue_unless(p_next_slot_exists.clone())
+        .continue_unless(p_next_slot.clone())
         .cross_product(p_ballot_num.clone())
         .map(q!(|(is_leader, ballot_num): (bool, u32)| ballot_num)) // Only tell the clients once when leader election concludes
         .broadcast_bincode(&clients);
@@ -513,8 +523,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         .send_bincode(&proposers);
     a_to_proposers_p1b_complete_cycle.complete(a_to_proposers_p1b_new);
 
-    let a_to_proposers_p2b_new = p_to_acceptors_p2a
-        .clone()
+    let a_to_proposers_p2b_new: Stream<(u32, P2b), stream::Async, <D as Deploy<'a>>::Cluster> = p_to_acceptors_p2a
         .tick_batch()
         .cross_product(a_max_ballot.clone())
         .map(q!(|(p2a, max_ballot): (P2a, Ballot)| (p2a.ballot.id, P2b { ballot: p2a.ballot, max_ballot: max_ballot, slot: p2a.slot, value: p2a.value })))
@@ -633,48 +642,57 @@ mod tests {
         let f = 1;
         let num_clients = 1;
         let num_replicas = 1;
+        let profile = "profile";
         let (proposers, acceptors, clients, replicas) = super::paxos(
             &builder,
             &DeployClusterSpec::new(|| {
                 (0..(f+1))
-                    .map(|_| {
+                    .map(|i| {
                         deployment.borrow_mut().add_service(
                             HydroflowCrate::new(".", localhost.clone())
                                 .bin("paxos")
-                                .profile("dev"),
+                                .profile(profile)
+                                .perf(format!("proposer{}.perf.data", i))
+                                .display_name(format!("Proposer{}", i)),
                         )
                     })
                     .collect()
             }),
             &DeployClusterSpec::new(|| {
                 (0..(2*f+1))
-                    .map(|_| {
+                    .map(|i| {
                         deployment.borrow_mut().add_service(
                             HydroflowCrate::new(".", localhost.clone())
                                 .bin("paxos")
-                                .profile("dev"),
+                                .profile(profile)
+                                .perf(format!("acceptor{}.perf.data", i))
+                                .display_name(format!("Acceptor{}", i)),
                         )
                     })
                     .collect()
             }),
             &DeployClusterSpec::new(|| {
                 (0..num_clients)
-                    .map(|_| {
+                    .map(|i| {
                         deployment.borrow_mut().add_service(
                             HydroflowCrate::new(".", localhost.clone())
                                 .bin("paxos")
-                                .profile("dev"),
+                                .profile(profile)
+                                .perf(format!("client{}.perf.data", i))
+                                .display_name(format!("Client{}", i)),
                         )
                     })
                     .collect()
             }),
             &DeployClusterSpec::new(|| {
                 (0..num_replicas)
-                    .map(|_| {
+                    .map(|i| {
                         deployment.borrow_mut().add_service(
                             HydroflowCrate::new(".", localhost.clone())
                                 .bin("paxos")
-                                .profile("dev"),
+                                .profile(profile)
+                                .perf(format!("replica{}.perf.data", i))
+                                .display_name(format!("Replica{}", i)),
                         )
                     })
                     .collect()

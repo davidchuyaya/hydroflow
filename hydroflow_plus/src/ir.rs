@@ -205,6 +205,7 @@ pub enum HfPlusNode {
     },
     
     DeferTick(Box<HfPlusNode>),
+    GateSignal(Box<HfPlusNode>, Box<HfPlusNode>),
     Enumerate(Box<HfPlusNode>),
     Inspect {
         f: DebugExpr,
@@ -335,6 +336,12 @@ impl HfPlusNode {
             },
             HfPlusNode::DeferTick(input) => {
                 HfPlusNode::DeferTick(Box::new(transform(*input, seen_tees)))
+            },
+            HfPlusNode::GateSignal(input, signal) => {
+                HfPlusNode::GateSignal(
+                    Box::new(transform(*input, seen_tees)),
+                    Box::new(transform(*signal, seen_tees)),
+                )
             },
             HfPlusNode::Enumerate(input) => {
                 HfPlusNode::Enumerate(Box::new(transform(*input, seen_tees)))
@@ -775,6 +782,39 @@ impl HfPlusNode {
                 });
 
                 (defer_tick_ident, input_location_id)
+            }
+
+            HfPlusNode::GateSignal(input, signal) => {
+                let (input_ident, input_location_id) =
+                    input.emit(graph_builders, built_tees, next_stmt_id);
+                let (signal_ident, signal_location_id) =
+                    signal.emit(graph_builders, built_tees, next_stmt_id);
+
+                assert_eq!(
+                    input_location_id, signal_location_id,
+                    "gate_signal inputs must be in the same location"
+                );
+
+                let gate_signal_id = *next_stmt_id;
+                *next_stmt_id += 1;
+
+                let gate_signal_ident =
+                    syn::Ident::new(&format!("stream_{}", gate_signal_id), Span::call_site());
+
+                let builder = graph_builders.entry(input_location_id).or_default();
+                builder.add_statement(parse_quote! {
+                    #input_ident -> [input]#gate_signal_ident;
+                });
+
+                builder.add_statement(parse_quote! {
+                    #signal_ident -> [signal]#gate_signal_ident;
+                });
+
+                builder.add_statement(parse_quote! {
+                    #gate_signal_ident = defer_signal::<'tick>();
+                });
+
+                (gate_signal_ident, input_location_id)
             }
 
             HfPlusNode::Enumerate(input) => {
