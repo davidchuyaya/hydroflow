@@ -162,8 +162,13 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
         )
     }
 
-    pub fn zip_with_singleton<O>(self, other: Stream<'a, O, Windowed, N>) -> Stream<'a, (T, O), W, N>
-    where O: Clone {
+    pub fn zip_with_singleton<O>(
+        self,
+        other: Stream<'a, O, Windowed, N>,
+    ) -> Stream<'a, (T, O), W, N>
+    where
+        O: Clone,
+    {
         if self.node.id() != other.node.id() {
             panic!("zip_with_singleton must be called on streams on the same node");
         }
@@ -180,7 +185,10 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
 
     // TODO(shadaj): should allow for differing windows, using strongest one
     pub fn cross_product<O>(self, other: Stream<'a, O, W, N>) -> Stream<'a, (T, O), W, N>
-    where T: Clone, O: Clone {
+    where
+        T: Clone,
+        O: Clone,
+    {
         if self.node.id() != other.node.id() {
             panic!("cross_product must be called on streams on the same node");
         }
@@ -255,14 +263,15 @@ impl<'a, T, N: Location + Clone> Stream<'a, T, Async, N> {
     }
 }
 
-
 impl<'a, T, N: Location + Clone> Stream<'a, T, Windowed, N> {
     pub fn cast_async(self) -> Stream<'a, T, Async, N> {
         Stream::new(self.node, self.ir_leaves, self.ir_node.into_inner())
     }
 
     pub fn sort(self) -> Stream<'a, T, Windowed, N>
-     where T: Ord {
+    where
+        T: Ord,
+    {
         Stream::new(
             self.node,
             self.ir_leaves,
@@ -371,7 +380,8 @@ impl<'a, K, V1, W, N: Location + Clone> Stream<'a, (K, V1), W, N> {
     pub fn join<W2, V2>(self, n: Stream<'a, (K, V2), W2, N>) -> Stream<'a, (K, (V1, V2)), W, N>
     where
         K: Clone + Eq + Hash,
-        V1: Clone, V2: Clone
+        V1: Clone,
+        V2: Clone,
     {
         if self.node.id() != n.node.id() {
             panic!("join must be called on streams on the same node");

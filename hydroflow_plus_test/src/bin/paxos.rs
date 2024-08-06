@@ -11,7 +11,7 @@ async fn main() {
     let i_am_leader_send_timeout = Duration::from_secs(5);
     let i_am_leader_check_timeout = Duration::from_secs(10);
     let i_am_leader_check_timeout_delay_multiplier = 15;
-    
+
     hydroflow_plus::launch!(|ports| hydroflow_plus_test::cluster::paxos::paxos_runtime!(
         ports,
         &f,

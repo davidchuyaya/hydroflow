@@ -237,8 +237,13 @@ impl<'a, D: LocalDeploy<'a>> FlowBuilder<'a, D> {
         on: &L,
         delay: impl Quoted<'a, Duration> + Copy + 'a,
         interval: impl Quoted<'a, Duration> + Copy + 'a,
-    ) -> Stream<'a, tokio::time::Instant, Async, L>  {
-        self.source_stream(on, q!(tokio_stream::wrappers::IntervalStream::new(tokio::time::interval_at(tokio::time::Instant::now() + delay, interval))))
+    ) -> Stream<'a, tokio::time::Instant, Async, L> {
+        self.source_stream(
+            on,
+            q!(tokio_stream::wrappers::IntervalStream::new(
+                tokio::time::interval_at(tokio::time::Instant::now() + delay, interval)
+            )),
+        )
     }
 
     pub fn cycle<T, W, L: Location + Clone>(

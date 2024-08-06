@@ -204,7 +204,7 @@ pub enum HfPlusNode {
         f: DebugExpr,
         input: Box<HfPlusNode>,
     },
-    
+
     DeferTick(Box<HfPlusNode>),
     GateSignal(Box<HfPlusNode>, Box<HfPlusNode>),
     Enumerate(Box<HfPlusNode>),
@@ -336,21 +336,17 @@ impl HfPlusNode {
                 f,
                 input: Box::new(transform(*input, seen_tees)),
             },
-            HfPlusNode::Sort(input) => {
-                HfPlusNode::Sort(Box::new(transform(*input, seen_tees)))
-            },
+            HfPlusNode::Sort(input) => HfPlusNode::Sort(Box::new(transform(*input, seen_tees))),
             HfPlusNode::DeferTick(input) => {
                 HfPlusNode::DeferTick(Box::new(transform(*input, seen_tees)))
-            },
-            HfPlusNode::GateSignal(input, signal) => {
-                HfPlusNode::GateSignal(
-                    Box::new(transform(*input, seen_tees)),
-                    Box::new(transform(*signal, seen_tees)),
-                )
-            },
+            }
+            HfPlusNode::GateSignal(input, signal) => HfPlusNode::GateSignal(
+                Box::new(transform(*input, seen_tees)),
+                Box::new(transform(*signal, seen_tees)),
+            ),
             HfPlusNode::Enumerate(input) => {
                 HfPlusNode::Enumerate(Box::new(transform(*input, seen_tees)))
-            },
+            }
             HfPlusNode::Inspect { f, input } => HfPlusNode::Inspect {
                 f,
                 input: Box::new(transform(*input, seen_tees)),
@@ -793,8 +789,7 @@ impl HfPlusNode {
                 let sort_id = *next_stmt_id;
                 *next_stmt_id += 1;
 
-                let sort_ident =
-                    syn::Ident::new(&format!("stream_{}", sort_id), Span::call_site());
+                let sort_ident = syn::Ident::new(&format!("stream_{}", sort_id), Span::call_site());
 
                 let builder = graph_builders.entry(input_location_id).or_default();
                 builder.add_statement(parse_quote! {
