@@ -285,8 +285,35 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
     })
     );
     r_sended_commits_complete_cycle.complete(r_valid_commit.clone().all_ticks().defer_tick());
-    r_valid_commit.unique().for_each(q!(|commit: Committed| println!("replica receive 2f+1 valid commit message, request commit: {:?}", commit)));
+    r_valid_commit.clone().unique().for_each(q!(|commit: Committed| println!("replica receive 2f+1 valid commit message, request commit: {:?}", commit)));
     /* end phase commit */
+    
+
+    // client saved commited messages.
+    let (c_committed_complete_cycle, c_committed) = flow.cycle(&client);
+
+    // replicas send back the commited message to the client.
+    let c_receive_commit = r_valid_commit.send_bincode(&client).tick_batch().unique();
+    // client receive reply and count it 
+    let c_received_commit_count = c_receive_commit
+    .map(q!(move |(id, commit): (u32, Committed)| (commit, id))) // switch to (commit, id) pair // remove anything already committed
+    .all_ticks()
+    .fold_keyed(q!(|| HashSet::new()), q!(move |count, id: u32| {
+        count.insert(id);
+    }));
+    
+    // client valid the commit message only if it received f+1 commit message.
+    let c_valid_commit = c_received_commit_count
+    .anti_join(c_committed)
+    .filter_map(q!(move |(commit, count): (Committed, HashSet<u32>)| {
+        if count.len() >= (f+1).try_into().unwrap() {
+            Some(commit)
+        } else {
+            None
+        }
+    }));
+    c_committed_complete_cycle.complete(c_valid_commit.clone().all_ticks().defer_tick());
+    c_valid_commit.unique().for_each(q!(|commit| println!("client receive f+1 valid commit message, request commit: {:?}", commit)));
 
 
     (client, replicas)
