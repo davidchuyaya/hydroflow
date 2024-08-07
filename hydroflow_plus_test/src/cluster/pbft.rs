@@ -122,6 +122,7 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
         .continue_if(is_primary.clone())
     ;
     let next_num = primary_sequence_number.union(first_sequence_number);
+
     // primary send pre-prepare message to all replicas.
     // first enumerate it and crossproduct with the current primary node and sequence number.
     let primary_pre_prepare_message: Stream<PrePrepare, Windowed, <D as Deploy<'a>>::Cluster>
@@ -143,15 +144,21 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
         ))
         .defer_tick();
     primary_sequence_number_complete_cycle.complete(primary_next_sequence_number);
-
+    
     // other replicas receive the pre-prepare message from primary.
     let r_receive_pre_prepare = primary_pre_prepare_message
         .broadcast_bincode_interleaved(&replicas)
         .tick_batch();
 
+
+    // // have a cycle represent the preprepare message sended by the replicas.
+    let (r_sended_pre_prepares_complete_cycle, r_sended_pre_prepares) = flow.cycle(&replicas);
+
+
     // other replicas verify the pre-prepare message is send by the current primary and the view number is the same.
     let r_valid_pre_prepare = r_receive_pre_prepare
         .cross_product(have_primary.clone())
+        .anti_join(r_sended_pre_prepares) //remove anything already sended
         .filter_map(q!(move |(pre_prepare, view): (PrePrepare, ViewNumber)| {
             if pre_prepare.view_number == view.view_number && pre_prepare.signature == view.id {
                 Some(pre_prepare)
@@ -160,6 +167,7 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
             }
         }));
 
+    // replicas edit the current valid pre-prepare message to prepare message.
     let r_prepare_message = r_valid_pre_prepare
         .clone()
         .map(q!(move |pre_prepare: PrePrepare| Prepare {
@@ -172,19 +180,29 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
 
     // have a persisted pre prepare stores all the pre-prepare messages.
     let r_persisted_pre_prepares = r_valid_pre_prepare.clone().all_ticks();
-    r_valid_pre_prepare.for_each(q!(|pre_prepare| println!(
+    r_valid_pre_prepare.clone().for_each(q!(|pre_prepare| println!(
         "replica receive valid pre-prepare message: {:?}",
         pre_prepare
     )));
-
+    // question 1: I think I need a all_tick here?
+    // question 2: I think I can replace r_persisted_pre_prepares with what is inside cycle? but it have defer tick. 
+    // what if : when it receive the valid prepare message, but it haven't save the pre-prepare message because of the defer?
+    r_sended_pre_prepares_complete_cycle.complete(r_persisted_pre_prepares.clone().defer_tick());
     // end phase pre-prepare
 
 
     /* phase prepare */
     // replicas broadcast prepare message to all other replicas.
     let r_receive_prepare = r_prepare_message.broadcast_bincode_interleaved(&replicas).tick_batch().unique();
+    
+    // have a cycle represent the prepare message sended by the replicas.
+    let (r_sended_prepares_complete_cycle, r_sended_prepares) = flow.cycle(&replicas);
+
     // check if the prepare message is valid by checking the view number and sequence number, and also if it is matched the previous pre-prepare request.
     let r_receive_valid_prepare = r_receive_prepare
+    .map(q!(move |prepare: Prepare| (Prepared{view_number: prepare.view_number, sequence_number: prepare.sequence_number, request: prepare.request.clone(), signature: prepare.signature}, prepare.id))) // seperate out the id
+    .anti_join(r_sended_prepares) //remove anything already sended
+    .map(q!(move |(prepared, id): (Prepared, u32)| Prepare{view_number: prepared.view_number, sequence_number: prepared.sequence_number, request: prepared.request.clone(), signature: prepared.signature, id: id}))// add back the id
     .cross_product(r_persisted_pre_prepares)
     .filter_map(q!(move |(prepare, pre_prepare): (Prepare, PrePrepare)| {
         if prepare.view_number == pre_prepare.view_number && prepare.sequence_number == pre_prepare.sequence_number && prepare.request == pre_prepare.request && prepare.signature == pre_prepare.signature {
@@ -214,20 +232,28 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
         }
     })
     );
-
     let r_valid_prepare_persisted = r_valid_prepare.clone().all_ticks();
+    r_sended_prepares_complete_cycle.complete(r_valid_prepare_persisted.clone().defer_tick());
     r_valid_prepare.clone().unique().for_each(q!(|prepare| println!("replica receive valid prepare message: {:?}", prepare)));
 
     /* end phase prepare */
+
+
     /* phase commit */
     // replicas broadcast commit message to all other replicas.
     let r_commit_message = r_valid_prepare
-    .clone()
     .map(q!(move |prepared: Prepared| Commit{view_number: prepared.view_number, sequence_number: prepared.sequence_number.clone(), request: prepared.request.clone(), signature: prepared.signature.clone(), id: r_id.clone()}));
     let r_receive_commit = r_commit_message.broadcast_bincode_interleaved(&replicas).tick_batch().unique();
+
+    // have a cycle represent the commit message sended by the replicas.
+    let (r_sended_commits_complete_cycle, r_sended_commits) = flow.cycle(&replicas);
+
     // r_receive_commit.clone().for_each(q!(|commit: Commit| println!("replica receive commit message: {:?}", commit)));
     // check if the commit message is valid by checking the view number and sequence number, and also if it is matched the previous prepare request.
     let r_receive_valid_commit = r_receive_commit
+    .map(q!(move |commit: Commit| (Committed{view_number: commit.view_number, sequence_number: commit.sequence_number, request: commit.request.clone(), signature: commit.signature}, commit.id))) // seperate out the id
+    .anti_join(r_sended_commits) //remove anything already sended
+    .map(q!(move |(committed, id): (Committed, u32)| Commit{view_number: committed.view_number, sequence_number: committed.sequence_number, request: committed.request.clone(), signature: committed.signature, id: id}))// add back the id
     .cross_product(r_valid_prepare_persisted.clone())
     .filter_map(q!(move |(commit, prepared): (Commit, Prepared)| {
         if commit.view_number == prepared.view_number && commit.sequence_number == prepared.sequence_number && commit.request == prepared.request && commit.signature == prepared.signature {
@@ -258,8 +284,8 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
         }
     })
     );
-
-    r_valid_commit.all_ticks().unique().for_each(q!(|commit: Committed| println!("replica receive 2f+1 valid commit message, request commit: {:?}", commit)));
+    r_sended_commits_complete_cycle.complete(r_valid_commit.clone().all_ticks().defer_tick());
+    r_valid_commit.unique().for_each(q!(|commit: Committed| println!("replica receive 2f+1 valid commit message, request commit: {:?}", commit)));
     /* end phase commit */
 
 

@@ -600,8 +600,9 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     {
         let ids = other.ids();
 
-        self.flat_map(q!(|b| ids.iter().map(move |id| (id.clone(), b.clone()))))
+        self.flat_map(q!(|b| ids.iter().map(move |id| (::std::clone::Clone::clone(id), ::std::clone::Clone::clone(&b)))))
             .send_bincode(other)
+
     }
 
     pub fn broadcast_bincode_interleaved<N2: Location + Cluster<'a> + Clone, Tag, V>(
