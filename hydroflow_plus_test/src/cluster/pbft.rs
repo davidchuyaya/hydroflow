@@ -144,129 +144,123 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
         .defer_tick();
     primary_sequence_number_complete_cycle.complete(primary_next_sequence_number);
 
-    primary_pre_prepare_message.clone().for_each(q!(|pre_prepare: PrePrepare| println!("primary send pre-prepare message: {:?}", pre_prepare)));
     // other replicas receive the pre-prepare message from primary.
     let r_receive_pre_prepare = primary_pre_prepare_message
         .broadcast_bincode_interleaved(&replicas)
         .tick_batch();
 
-    r_receive_pre_prepare.for_each(q!(|pre_prepare: PrePrepare| println!(
-        "replica receive pre-prepare message: {:?}",
+    // other replicas verify the pre-prepare message is send by the current primary and the view number is the same.
+    let r_valid_pre_prepare = r_receive_pre_prepare
+        .cross_product(have_primary.clone())
+        .filter_map(q!(move |(pre_prepare, view): (PrePrepare, ViewNumber)| {
+            if pre_prepare.view_number == view.view_number && pre_prepare.signature == view.id {
+                Some(pre_prepare)
+            } else {
+                None
+            }
+        }));
+
+    let r_prepare_message = r_valid_pre_prepare
+        .clone()
+        .map(q!(move |pre_prepare: PrePrepare| Prepare {
+            view_number: pre_prepare.view_number,
+            sequence_number: pre_prepare.sequence_number,
+            request: pre_prepare.request.clone(),
+            signature: pre_prepare.signature.clone(),
+            id: r_id.clone()
+        }));
+
+    // have a persisted pre prepare stores all the pre-prepare messages.
+    let r_persisted_pre_prepares = r_valid_pre_prepare.clone().all_ticks();
+    r_valid_pre_prepare.for_each(q!(|pre_prepare| println!(
+        "replica receive valid pre-prepare message: {:?}",
         pre_prepare
     )));
-
-    // // other replicas verify the pre-prepare message is send by the current primary and the view number is the same.
-    // let r_valid_pre_prepare = r_receive_pre_prepare
-    //     .cross_product(have_primary.clone())
-    //     .filter_map(q!(move |(pre_prepare, view): (PrePrepare, ViewNumber)| {
-    //         if pre_prepare.view_number == view.view_number && pre_prepare.signature == view.id {
-    //             Some(pre_prepare)
-    //         } else {
-    //             None
-    //         }
-    //     }));
-
-    // let r_prepare_message = r_valid_pre_prepare
-    //     .clone()
-    //     .map(q!(move |pre_prepare: PrePrepare| Prepare {
-    //         view_number: pre_prepare.view_number,
-    //         sequence_number: pre_prepare.sequence_number,
-    //         request: pre_prepare.request.clone(),
-    //         signature: pre_prepare.signature.clone(),
-    //         id: r_id.clone()
-    //     }));
-
-    // // have a persisted pre prepare stores all the pre-prepare messages.
-    // // let r_persisted_pre_prepares = r_valid_pre_prepare.clone().all_ticks();
-    // r_valid_pre_prepare.for_each(q!(|pre_prepare| println!(
-    //     "replica receive valid pre-prepare message: {:?}",
-    //     pre_prepare
-    // )));
 
     // end phase pre-prepare
 
 
-    // /* phase prepare */
-    // // replicas broadcast prepare message to all other replicas.
-    // let r_receive_prepare = r_prepare_message.broadcast_bincode_interleaved(&replicas).tick_batch().unique();
-    // // check if the prepare message is valid by checking the view number and sequence number, and also if it is matched the previous pre-prepare request.
-    // let r_receive_valid_prepare = r_receive_prepare
-    // .cross_product(r_persisted_pre_prepares)
-    // .filter_map(q!(move |(prepare, pre_prepare): (Prepare, PrePrepare)| {
-    //     if prepare.view_number == pre_prepare.view_number && prepare.sequence_number == pre_prepare.sequence_number && prepare.request == pre_prepare.request && prepare.signature == pre_prepare.signature {
-    //         Some(prepare)
-    //     } else {
-    //         None
-    //     }
-    // })
-    // );
-    // // count the valid prepare message received by the replica, do not count the prepare message sent by itself.
-    // let r_received_valid_prepare_count = r_receive_valid_prepare
-    // .clone()
-    // .map(q!(move |prepare: Prepare| (prepare.request.clone(), prepare)))
-    // .all_ticks()
-    // .fold_keyed(q!(|| HashSet::new()), q!(move |count, prepare: Prepare| {
-    //     count.insert(prepare.id);
-    // }));
+    /* phase prepare */
+    // replicas broadcast prepare message to all other replicas.
+    let r_receive_prepare = r_prepare_message.broadcast_bincode_interleaved(&replicas).tick_batch().unique();
+    // check if the prepare message is valid by checking the view number and sequence number, and also if it is matched the previous pre-prepare request.
+    let r_receive_valid_prepare = r_receive_prepare
+    .cross_product(r_persisted_pre_prepares)
+    .filter_map(q!(move |(prepare, pre_prepare): (Prepare, PrePrepare)| {
+        if prepare.view_number == pre_prepare.view_number && prepare.sequence_number == pre_prepare.sequence_number && prepare.request == pre_prepare.request && prepare.signature == pre_prepare.signature {
+            Some(prepare)
+        } else {
+            None
+        }
+    })
+    );
+    // count the valid prepare message received by the replica, do not count the prepare message sent by itself.
+    let r_received_valid_prepare_count = r_receive_valid_prepare
+    .clone()
+    .map(q!(move |prepare: Prepare| (prepare.request.clone(), prepare)))
+    .all_ticks()
+    .fold_keyed(q!(|| HashSet::new()), q!(move |count, prepare: Prepare| {
+        count.insert(prepare.id);
+    }));
 
-    // // save the valid prepare message only if the replica received 2f (f = 1) valid prepare message. (does not count itself)
-    // let r_valid_prepare = r_receive_valid_prepare
-    // .cross_product(r_received_valid_prepare_count)
-    // .filter_map(q!(move |(prepare, (request, count)): (Prepare, (String, HashSet<u32>))| {
-    //     if count.len() >= (2*f+1).try_into().unwrap() && request == prepare.request {
-    //         Some(Prepared{view_number: prepare.view_number, sequence_number: prepare.sequence_number, request: prepare.request.clone(), signature: prepare.signature})
-    //     } else {
-    //         None
-    //     }
-    // })
-    // );
+    // save the valid prepare message only if the replica received 2f (f = 1) valid prepare message. (does not count itself)
+    let r_valid_prepare = r_receive_valid_prepare
+    .cross_product(r_received_valid_prepare_count)
+    .filter_map(q!(move |(prepare, (request, count)): (Prepare, (String, HashSet<u32>))| {
+        if count.len() >= (2*f+1).try_into().unwrap() && request == prepare.request {
+            Some(Prepared{view_number: prepare.view_number, sequence_number: prepare.sequence_number, request: prepare.request.clone(), signature: prepare.signature})
+        } else {
+            None
+        }
+    })
+    );
 
-    // let r_valid_prepare_persisted = r_valid_prepare.clone().all_ticks();
-    // r_valid_prepare.clone().unique().for_each(q!(|prepare| println!("replica receive valid prepare message: {:?}", prepare)));
+    let r_valid_prepare_persisted = r_valid_prepare.clone().all_ticks();
+    r_valid_prepare.clone().unique().for_each(q!(|prepare| println!("replica receive valid prepare message: {:?}", prepare)));
 
-    // /* end phase prepare */
-    // /* phase commit */
-    // // replicas broadcast commit message to all other replicas.
-    // let r_commit_message = r_valid_prepare
-    // .clone()
-    // .map(q!(move |prepared: Prepared| Commit{view_number: prepared.view_number, sequence_number: prepared.sequence_number.clone(), request: prepared.request.clone(), signature: prepared.signature.clone(), id: r_id.clone()}));
-    // let r_receive_commit = r_commit_message.broadcast_bincode_interleaved(&replicas).tick_batch().unique();
-    // // r_receive_commit.clone().for_each(q!(|commit: Commit| println!("replica receive commit message: {:?}", commit)));
-    // // check if the commit message is valid by checking the view number and sequence number, and also if it is matched the previous prepare request.
-    // let r_receive_valid_commit = r_receive_commit
-    // .cross_product(r_valid_prepare_persisted.clone())
-    // .filter_map(q!(move |(commit, prepared): (Commit, Prepared)| {
-    //     if commit.view_number == prepared.view_number && commit.sequence_number == prepared.sequence_number && commit.request == prepared.request && commit.signature == prepared.signature {
-    //         Some(commit)
-    //     } else {
-    //         None
-    //     }
-    // })
-    // );
+    /* end phase prepare */
+    /* phase commit */
+    // replicas broadcast commit message to all other replicas.
+    let r_commit_message = r_valid_prepare
+    .clone()
+    .map(q!(move |prepared: Prepared| Commit{view_number: prepared.view_number, sequence_number: prepared.sequence_number.clone(), request: prepared.request.clone(), signature: prepared.signature.clone(), id: r_id.clone()}));
+    let r_receive_commit = r_commit_message.broadcast_bincode_interleaved(&replicas).tick_batch().unique();
+    // r_receive_commit.clone().for_each(q!(|commit: Commit| println!("replica receive commit message: {:?}", commit)));
+    // check if the commit message is valid by checking the view number and sequence number, and also if it is matched the previous prepare request.
+    let r_receive_valid_commit = r_receive_commit
+    .cross_product(r_valid_prepare_persisted.clone())
+    .filter_map(q!(move |(commit, prepared): (Commit, Prepared)| {
+        if commit.view_number == prepared.view_number && commit.sequence_number == prepared.sequence_number && commit.request == prepared.request && commit.signature == prepared.signature {
+            Some(commit)
+        } else {
+            None
+        }
+    })
+    );
 
-    // // count the valid commit message received by the replica, do not count the commit message sent by itself.
-    // let r_received_valid_commit_count = r_receive_valid_commit
-    // .clone()
-    // .map(q!(move |commit: Commit| (commit.request.clone(), commit)))
-    // .all_ticks()
-    // .fold_keyed(q!(|| HashSet::new()), q!(move |count, commit: Commit| {
-    //     count.insert(commit.id);
-    // }));
+    // count the valid commit message received by the replica, do not count the commit message sent by itself.
+    let r_received_valid_commit_count = r_receive_valid_commit
+    .clone()
+    .map(q!(move |commit: Commit| (commit.request.clone(), commit)))
+    .all_ticks()
+    .fold_keyed(q!(|| HashSet::new()), q!(move |count, commit: Commit| {
+        count.insert(commit.id);
+    }));
 
-    // // save the valid commit message only if the replica received 2 (f = 1) valid commit message. (total 2f + 1 replicas accepted the request)
-    // let r_valid_commit = r_receive_valid_commit
-    // .cross_product(r_received_valid_commit_count)
-    // .filter_map(q!(move |(commit, (request, count)): (Commit, (String, HashSet<u32>))| {
-    //     if count.len() >= (2*f+1).try_into().unwrap() && request == commit.request {
-    //         Some(Committed{view_number: commit.view_number, sequence_number: commit.sequence_number, request: commit.request.clone(), signature: commit.signature})
-    //     } else {
-    //         None
-    //     }
-    // })
-    // );
+    // save the valid commit message only if the replica received 2 (f = 1) valid commit message. (total 2f + 1 replicas accepted the request)
+    let r_valid_commit = r_receive_valid_commit
+    .cross_product(r_received_valid_commit_count)
+    .filter_map(q!(move |(commit, (request, count)): (Commit, (String, HashSet<u32>))| {
+        if count.len() >= (2*f+1).try_into().unwrap() && request == commit.request {
+            Some(Committed{view_number: commit.view_number, sequence_number: commit.sequence_number, request: commit.request.clone(), signature: commit.signature})
+        } else {
+            None
+        }
+    })
+    );
 
-    // r_valid_commit.all_ticks().unique().for_each(q!(|commit: Committed| println!("replica receive 2f+1 valid commit message, request commit: {:?}", commit)));
-    // /* end phase commit */
+    r_valid_commit.all_ticks().unique().for_each(q!(|commit: Committed| println!("replica receive 2f+1 valid commit message, request commit: {:?}", commit)));
+    /* end phase commit */
 
 
     (client, replicas)
