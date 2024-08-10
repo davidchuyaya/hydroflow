@@ -5,6 +5,7 @@ use hydroflow_plus::*;
 use hydroflow_plus_cli_integration::{CLIRuntime, HydroflowPlusMeta};
 use serde::{Deserialize, Serialize};
 use stageleft::*;
+use std::time::{Duration, SystemTime};
 use stream::Windowed;
 
 // use hydroflow_plus_cli_integration::*;
@@ -69,6 +70,7 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
     client_spec: &impl ProcessSpec<'a, D>,
     replicas_spec: &impl ClusterSpec<'a, D>,
     f: RuntimeData<&'a u32>,
+    time_duration: RuntimeData<&'a Duration>, 
 ) -> (D::Process, D::Cluster) {
     // Assume single client.
     let client = flow.process(client_spec);
@@ -76,6 +78,48 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
     let replicas = flow.cluster(replicas_spec);
     // each replica have it's own id stored in r_id.
     let r_id = replicas.self_id();
+
+
+    /* very simple primary election, assume primary has the largest id in cluster */
+    let (have_primary_complete_cycle, have_primary) = flow.cycle(&replicas);
+    // let (is_primary_complete_cycle, is_primary) = flow.cycle(&replicas);
+
+    // broadcast view number to all replicas assume view number is the id of the replica.
+    let r_view_number = flow
+    .source_iter(&replicas, q!([r_id]))
+    .broadcast_bincode(&replicas);
+
+    // replica receive the id from replicas, calculate the largest id in cluster, also count how many it received.
+    let r_largest_id = r_view_number
+    .all_ticks()
+    .sample_every(q!(*time_duration))
+    .fold(q!(|| (0, 0, 0)), q!(|(count, largest_view, pid), (new_pid, view)| {
+        *count += 1;
+        if view > *largest_view {
+            *largest_view = view;
+            *pid = new_pid;
+        }
+    }));
+
+    // replica make conclusion if it received all ids from all replicas.
+    let r_primary_id = r_largest_id
+    .filter_map(q!(move |(count, view, pid)| {
+        if count == 4 {
+            Some(ViewNumber{view_number: view, id: pid})
+        } else {
+            None
+        }
+    }));
+
+    have_primary_complete_cycle.complete(r_primary_id);    
+    // let is_primary = have_primary
+    // .clone()
+    // .filter(q!(move |view: &ViewNumber| view.id == r_id))
+    // .all_ticks();
+    /* End simple primary election */
+
+
+    
 
     // assume the primary node is 0. could be fixed by sample_every.
     // is_primary is a single boolean persisted stream that indicate whether the node is primary or not.
@@ -93,6 +137,7 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
             }]),
         )
         .all_ticks();
+
 
     // phase pre-prepare
 
@@ -324,8 +369,9 @@ pub fn pbft_runtime<'a>(
     flow: FlowBuilder<'a, CLIRuntime>,
     cli: RuntimeData<&'a HydroCLI<HydroflowPlusMeta>>,
     f: RuntimeData<&'a u32>,
+    time_duration: RuntimeData<&'a Duration>,
 ) -> impl Quoted<'a, Hydroflow<'a>> {
-    let _ = pbft(&flow, &cli, &cli, f);
+    let _ = pbft(&flow, &cli, &cli, f, time_duration);
     flow.extract()
         .optimize_default()
         .with_dynamic_id(q!(cli.meta.subgraph_id))
@@ -374,6 +420,7 @@ mod tests {
                     })
                     .collect()
             }),
+            RuntimeData::new("Fake"),
             RuntimeData::new("Fake"),
         );
 
