@@ -62,6 +62,10 @@ impl<'a, ID> HfCompiled<'a, ID> {
     pub fn hydroflow_ir(&self) -> &BTreeMap<usize, HydroflowGraph> {
         &self.hydroflow_ir
     }
+
+    pub fn take_ir(&mut self, id: &usize) -> Option<HydroflowGraph> {
+        self.hydroflow_ir.remove(id)
+    }
 }
 
 impl<'a> HfCompiled<'a, usize> {
