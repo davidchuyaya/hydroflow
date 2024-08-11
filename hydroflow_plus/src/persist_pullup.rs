@@ -39,9 +39,9 @@ mod tests {
         let built = flow.extract();
 
         insta::assert_debug_snapshot!(built.ir());
-
+        println!("{:?}", built.ir());
         let optimized = built.optimize_with(super::persist_pullup);
-
+        println!("{:?}", optimized.ir());
         insta::assert_debug_snapshot!(optimized.ir());
         for (id, graph) in optimized.no_optimize().hydroflow_ir() {
             insta::with_settings!({snapshot_suffix => format!("surface_graph_{id}")}, {
