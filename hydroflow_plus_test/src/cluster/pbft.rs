@@ -1,5 +1,5 @@
+// cargo test -p hydroflow_plus_test pbft -- --nocapture
 use std::collections::HashSet;
-
 use hydroflow_plus::util::cli::HydroCLI;
 use hydroflow_plus::*;
 use hydroflow_plus_cli_integration::{CLIRuntime, HydroflowPlusMeta};
