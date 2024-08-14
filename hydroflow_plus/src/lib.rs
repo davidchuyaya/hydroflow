@@ -39,6 +39,7 @@ pub mod persist_pullup;
 pub mod profiler;
 
 pub mod properties;
+mod monotonic_detection;
 
 #[derive(Clone)]
 pub struct RuntimeContext<'a> {
