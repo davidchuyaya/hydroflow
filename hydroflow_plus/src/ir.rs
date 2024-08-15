@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Deref;
 use std::rc::Rc;
+use std::fmt;
 
 use hydroflow_lang::graph::FlatGraphBuilder;
 use hydroflow_lang::parse::Pipeline;
@@ -56,6 +57,76 @@ pub enum HfPlusSource {
     Spin(),
 }
 
+// a enum class that represent all types of node in the graph. for create inverted graph purpose.
+#[derive(Clone, Debug)]
+pub enum HfPlusGraphNode {
+    HfPlusLeaf(HfPlusLeaf),
+    HfPlusNode {
+        node: HfPlusNode,
+        next: Vec<Rc<RefCell<HfPlusGraphNode>>>,
+    },
+    HfPlusSource {
+        node: HfPlusNode,
+        next: Vec<Rc<RefCell<HfPlusGraphNode>>>,
+    },
+}
+
+impl fmt::Display for HfPlusGraphNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HfPlusGraphNode::HfPlusLeaf(leaf) => match leaf {
+                HfPlusLeaf::ForEach { f: func, .. } => {
+                    write!(f, "ForEach(f: {:?})", func)
+                }
+                HfPlusLeaf::DestSink { .. } => write!(f, "DestSink"),
+                HfPlusLeaf::CycleSink { .. } => write!(f, "CycleSink"),
+            },
+            
+            HfPlusGraphNode::HfPlusNode { node, next } => {
+                match node {
+                    HfPlusNode::Source { source, location_id } => {
+                        write!(f, "Source(source: {:?}, location_id: {})", source, location_id)?
+                    }
+                    HfPlusNode::Union(left, right) => {
+                        write!(f, "Union(left: {:?}, right: {:?})", left, right)?
+                    }
+                    o => write!(f, "{:?}", o)?, // 处理其他节点类型
+                }
+                if !next.is_empty() {
+                    write!(f, " -> ")?;
+                    for (i, child) in next.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " | ")?; // 多个分支的情况
+                        }
+                        write!(f, "{}", child.borrow())?;
+                    }
+                }
+                Ok(())
+            }
+            HfPlusGraphNode::HfPlusSource { node, next } => {
+                match node {
+                    HfPlusNode::Source { source, location_id } => {
+                        write!(f, "Source(source: {:?}, location_id: {})", source, location_id)?
+                    }
+                    o => write!(f, "{:?}", o)?, // 处理其他节点类型
+                }
+                if !next.is_empty() {
+                    write!(f, " -> ")?;
+                    for (i, child) in next.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " | ")?; // 多个分支的情况
+                        }
+                        write!(f, "{}", child.borrow())?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+
+
 /// An leaf in a Hydroflow+ graph, which is an pipeline that doesn't emit
 /// any downstream values. Traversals over the dataflow graph and
 /// generating Hydroflow IR start from leaves.
@@ -77,6 +148,46 @@ pub enum HfPlusLeaf {
 }
 
 impl HfPlusLeaf {
+    
+    // create a inverted graph, with each node a HfPlusGraphNode, return the SourceNode
+    pub fn create_inverted_graph(
+        self,
+        seen_tees: &mut SeenTees,
+    ) -> Vec<Rc<RefCell<HfPlusGraphNode>>> {
+        match self {
+            HfPlusLeaf::ForEach { f, input } => {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusLeaf(
+                    HfPlusLeaf::ForEach {
+                        f,
+                        input: input.clone(),
+                    },
+                )));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+            HfPlusLeaf::DestSink { sink, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusLeaf(HfPlusLeaf::DestSink {
+                sink,
+                input: input.clone(),
+            })));
+                input.create_inverted_graph( vec![cur], seen_tees)
+            },
+            HfPlusLeaf::CycleSink {
+                ident,
+                location_id,
+                input,
+            } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusLeaf( HfPlusLeaf::CycleSink {
+                ident,
+                location_id,
+                input: input.clone(),
+            })));
+                input.create_inverted_graph( vec![cur], seen_tees)
+            },
+        }
+    }
+
     pub fn transform_children(
         self,
         mut transform: impl FnMut(HfPlusNode, &mut SeenTees) -> HfPlusNode,
@@ -249,6 +360,304 @@ pub enum HfPlusNode {
 pub type SeenTees = HashMap<*const RefCell<HfPlusNode>, Rc<RefCell<HfPlusNode>>>;
 
 impl HfPlusNode {
+
+    // return a Vec here?
+    pub fn create_inverted_graph(
+        self,
+        prev: Vec<Rc<RefCell<HfPlusGraphNode>>>,
+        seen_tees: &mut SeenTees,
+    ) -> Vec<Rc<RefCell<HfPlusGraphNode>>> {
+        match self {
+            // if it is source, return it self.
+            HfPlusNode::Placeholder => 
+            {
+                vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {node: HfPlusNode::Placeholder, next: prev}))]
+            }
+
+            HfPlusNode::Source {
+                source,
+                location_id,
+            } => vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                node: HfPlusNode::Source {
+                source,
+                location_id,
+            },
+                next: prev,
+            }))],
+
+            HfPlusNode::CycleSource { ident, location_id } => vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                node: HfPlusNode::CycleSource { ident, location_id },
+                next: prev,
+            }))],
+
+            HfPlusNode::Tee { inner } => {
+                if let Some(already_seen) =
+                    seen_tees.get(&(inner.as_ref() as *const RefCell<HfPlusNode>))
+                {
+                    vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                        node: HfPlusNode::Tee {
+                            inner: already_seen.clone(),
+                        },
+                        next: prev,
+                    }))]
+                } else {
+                    let transformed_cell = Rc::new(RefCell::new(HfPlusNode::Placeholder));
+                    seen_tees.insert(
+                        inner.as_ref() as *const RefCell<HfPlusNode>,
+                        transformed_cell.clone(),
+                    );
+                    let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                        node: HfPlusNode::Tee { inner: inner.clone() },
+                        next: prev,
+                    }));
+
+                    // Recursively create the inverted graph for the inner node
+                    let mut result = inner.borrow().clone().create_inverted_graph(vec![cur.clone()], seen_tees);
+                    // Replace the placeholder with the actual processed node
+                     
+                    result
+
+                }
+            },
+
+            HfPlusNode::Persist(inner) => {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Persist(inner.clone()),
+                    next: prev,
+                }));
+                inner.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::Delta(inner) => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Delta(inner.clone()),
+                    next: prev,
+                }));
+                inner.create_inverted_graph(vec![cur], seen_tees)
+            },
+            
+            HfPlusNode::Union(left, right) => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Union(
+                        left.clone(),
+                        right.clone(),
+                    ),
+                    next: prev
+                }));
+                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
+                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
+                source_left
+            },
+
+            HfPlusNode::CrossProduct(left, right) =>
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                    node: HfPlusNode::CrossProduct(left.clone(), right.clone()),
+                    next: prev
+                }));
+                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
+                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
+                source_left
+            },
+
+            HfPlusNode::ZipWithSingleton(left, right) =>
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                    node: HfPlusNode::ZipWithSingleton(left.clone(), right.clone()),
+                    next: prev
+                }));
+                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
+                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
+                source_left
+            },
+
+            HfPlusNode::Join(left, right) => {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                    node: HfPlusNode::Join(left.clone(), right.clone()),
+                    next: prev
+                }));
+                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
+                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
+                source_left
+            },
+
+            HfPlusNode::Difference(left, right) => {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                    node: HfPlusNode::Difference(left.clone(), right.clone()),
+                    next: prev
+                }));
+                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
+                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
+                source_left
+            },
+
+            HfPlusNode::AntiJoin(left, right) => {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                    node: HfPlusNode::AntiJoin(left.clone(), right.clone()),
+                    next: prev
+                }));
+                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
+                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
+                source_left
+            },
+
+            HfPlusNode::Map { f, input } =>             
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Map{f, input: input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+
+            HfPlusNode::FlatMap { f, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::FlatMap{f, input: input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::Filter { f, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Filter{f, input: input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::FilterMap { f, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::FilterMap{f, input: input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::Sort(input) => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Sort(input.clone()),
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::DeferTick(input) => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::DeferTick(input.clone()),
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::GateSignal(input, signal) => {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
+                    node: HfPlusNode::GateSignal(input.clone(), signal.clone()),
+                    next: prev
+                }));
+                let mut source_input = input.create_inverted_graph(vec![cur.clone()], seen_tees);
+                source_input.extend(signal.create_inverted_graph(vec![cur], seen_tees));
+                source_input
+            },
+
+            HfPlusNode::Enumerate(input) => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Enumerate(input.clone()),
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::Inspect { f, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Inspect{f, input: input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::Unique(input) => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Unique(input.clone()),
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::Fold { init, acc, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Fold{init, acc, input:input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::FoldKeyed { init, acc, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::FoldKeyed{init, acc, input:input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::Reduce { f, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Reduce{f, input: input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::ReduceKeyed { f, input } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::ReduceKeyed{f, input: input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            HfPlusNode::Network {
+                to_location,
+                serialize_pipeline,
+                sink_expr,
+                source_expr,
+                deserialize_pipeline,
+                input,
+            } => 
+            {
+                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
+                    node: HfPlusNode::Network{to_location,
+                        serialize_pipeline,
+                        sink_expr,
+                        source_expr,
+                        deserialize_pipeline, 
+                        input: input.clone()},
+                    next: prev,
+                }));
+                input.create_inverted_graph(vec![cur], seen_tees)
+            },
+
+            // o => vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {node: o, next: prev}))]
+
+        }
+    }
+
+
     pub fn transform_children(
         self,
         mut transform: impl FnMut(HfPlusNode, &mut SeenTees) -> HfPlusNode,

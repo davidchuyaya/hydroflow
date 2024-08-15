@@ -19,6 +19,7 @@ pub mod runtime_support {
 }
 
 pub mod stream;
+pub mod monotonic_detection;
 pub use stream::Stream;
 
 pub mod location;
