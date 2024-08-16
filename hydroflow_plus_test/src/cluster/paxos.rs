@@ -87,6 +87,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     f: RuntimeData<&'a usize>,
     num_clients_per_node: RuntimeData<&'a usize>,
     median_latency_window_size: RuntimeData<&'a usize>, /* How many latencies to keep in the window for calculating the median */
+    checkpoint_frequency: RuntimeData<&'a usize>, // How many sequence numbers to commit before checkpointing
     i_am_leader_send_timeout: RuntimeData<&'a Duration>, // How often to heartbeat
     i_am_leader_check_timeout: RuntimeData<&'a Duration>, // How often to check if heartbeat expired
     i_am_leader_check_timeout_delay_multiplier: RuntimeData<&'a usize>, /* Initial delay, multiplied by proposer pid, to stagger proposers checking for timeouts */
@@ -106,6 +107,7 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
         flow,
         num_clients_per_node,
         median_latency_window_size,
+        f,
     )
     .send_bincode_interleaved(&proposers);
 
@@ -178,17 +180,19 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     // Acceptors.
     flow.source_iter(&acceptors, q!(["Acceptors say hello"]))
         .for_each(q!(|s| println!("{}", s)));
+    let (r_to_acceptors_checkpoint_complete_cycle, r_to_acceptors_checkpoint) = flow.cycle(&acceptors);
     // p_to_acceptors_p1a.inspect(q!(|p1a: P1a| println!("Acceptor received P1a: {:?}", p1a)));
     // p_to_acceptors_p2a.inspect(q!(|p2a: P2a| println!("Acceptor received P2a: {:?}", p2a)));
     let (a_to_proposers_p1b_new, a_to_proposers_p2b_new) =
-        acceptor::<D>(p_to_acceptors_p1a, p_to_acceptors_p2a, &proposers);
+        acceptor::<D>(p_to_acceptors_p1a, p_to_acceptors_p2a, r_to_acceptors_checkpoint, &proposers, f);
     a_to_proposers_p1b_complete_cycle.complete(a_to_proposers_p1b_new);
     a_to_proposers_p2b_complete_cycle.complete(a_to_proposers_p2b_new);
 
     // Replicas.
-    let r_new_processed_payloads =
-        replica(flow, &replicas, p_to_replicas).send_bincode_interleaved(&clients);
-    r_to_clients_payload_applied_cycle.complete(r_new_processed_payloads);
+    let (r_to_acceptors_checkpoint_new, r_new_processed_payloads) =
+        replica(flow, &replicas, p_to_replicas, checkpoint_frequency);
+    r_to_clients_payload_applied_cycle.complete(r_new_processed_payloads.send_bincode(&clients));
+    r_to_acceptors_checkpoint_complete_cycle.complete(r_to_acceptors_checkpoint_new.broadcast_bincode(&acceptors));
 
     (proposers, acceptors, clients, replicas)
 }
@@ -196,11 +200,49 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
 fn acceptor<'a, D: Deploy<'a, ClusterId = u32>>(
     p_to_acceptors_p1a: Stream<'a, P1a, stream::Async, D::Cluster>,
     p_to_acceptors_p2a: Stream<'a, P2a, stream::Async, D::Cluster>,
+    r_to_acceptors_checkpoint: Stream<'a, (u32, i32), stream::Async, D::Cluster>,
     proposers: &D::Cluster,
+    f: RuntimeData<&'a usize>,
 ) -> (
     Stream<'a, (u32, P1b), stream::Async, D::Cluster>,
     Stream<'a, (u32, P2b), stream::Async, D::Cluster>,
 ) {
+    // Get the latest checkpoint sequence per replica
+    r_to_acceptors_checkpoint.for_each(q!(|(_, seq): (u32, i32)| println!("Acceptor received checkpoint: {:?}", seq)));
+    // let a_checkpoint_largest_seqs = r_to_acceptors_checkpoint
+    //     .all_ticks()
+    //     .reduce_keyed(q!(|curr_seq: &mut i32, seq: i32| {
+    //         if seq > *curr_seq {
+    //             *curr_seq = seq;
+    //         }
+    //     }));
+    // let a_checkpoints_quorum_reached = a_checkpoint_largest_seqs
+    //     .clone()
+    //     .count()
+    //     .filter_map(q!(|num_received: usize| if num_received == *f + 1 {
+    //         Some(true)
+    //     } else {
+    //         None
+    //     }));
+    // // Find the smallest checkpoint seq that everyone agrees to
+    // let a_min_checkpoint = a_checkpoint_largest_seqs
+    //     .continue_if(a_checkpoints_quorum_reached)
+    //     .fold(q!(|| i32::MAX), q!(|min_seq: &mut i32, (sender, seq): (u32, i32)| {
+    //         if seq < *min_seq {
+    //             *min_seq = seq;
+    //         }
+    //     }));
+    // let a_checkpoint_seq = a_min_checkpoint
+    //     .all_ticks()
+    //     .fold(q!(|| -1), q!(|last_checkpoint_seq: &mut i32, min_checkpoint_seq: i32| {
+    //         if min_checkpoint_seq > *last_checkpoint_seq {
+    //             *last_checkpoint_seq = min_checkpoint_seq;
+    //         }
+    //     }));
+    // // TODO: Figure out how to get checkpoint seq from previous tick as well...
+    // let a_checkpoint_delete_range = a_checkpoint_seq
+    //     .delta(); // Only if the checkpoint has changed
+
     let a_max_ballot = p_to_acceptors_p1a.clone().all_ticks().fold(
         q!(|| Ballot { num: 0, id: 0 }),
         q!(|max_ballot: &mut Ballot, p1a: P1a| {
@@ -209,6 +251,7 @@ fn acceptor<'a, D: Deploy<'a, ClusterId = u32>>(
             }
         }),
     );
+    // TODO: Delete checkpointed values
     let a_log = p_to_acceptors_p2a
         .clone()
         .tick_batch()
@@ -319,13 +362,13 @@ fn p_p2b<'a, D: Deploy<'a, ClusterId = u32>>(
                     None
                 }
             ));
-    // p_p2b_all_commit_slots.clone().for_each(q!(|slot: i32| println!("Proposer slot all received: {:?}", slot)));
+    // p_p2b_all_commit_slots.inspect(q!(|slot: i32| println!("Proposer slot all received: {:?}", slot)));
     let p_broadcasted_p2b_slots_new = p_p2b_quorum_reached
         .clone()
         .map(q!(|(slot, (count, p2b)): (i32, (usize, P2b))| slot))
         .filter_not_in(p_p2b_all_commit_slots.clone())
         .defer_tick();
-    // p_broadcasted_p2b_slots_new.clone().for_each(q!(|slot: i32| println!("Proposer slot broadcasted: {:?}", slot)));
+    // p_broadcasted_p2b_slots_new.inspect(q!(|slot: i32| println!("Proposer slot broadcasted: {:?}", slot)));
     p_broadcasted_p2b_slots_complete_cycle.complete(p_broadcasted_p2b_slots_new);
     let p_persisted_p2bs_new = p_p2b
         .clone()
@@ -333,7 +376,7 @@ fn p_p2b<'a, D: Deploy<'a, ClusterId = u32>>(
         .anti_join(p_p2b_all_commit_slots.clone())
         .map(q!(|(slot, (sender, p2b)): (i32, (u32, P2b))| (sender, p2b)))
         .defer_tick();
-    // p_persisted_p2bs_new.clone().for_each(q!(|(sender, p2b): (u32, P2b)| println!("Proposer persisting p2b: {:?}", p2b)));
+    // p_persisted_p2bs_new.inspect(q!(|(sender, p2b): (u32, P2b)| println!("Proposer persisting p2b: {:?}", p2b)));
     p_persisted_p2bs_complete_cycle.complete(p_persisted_p2bs_new);
     p_to_replicas
 }
@@ -527,9 +570,10 @@ fn replica<'a, D: Deploy<'a, ClusterId = u32>>(
     flow: &FlowBuilder<'a, D>,
     replicas: &D::Cluster,
     p_to_replicas: Stream<'a, ReplicaPayload, stream::Async, D::Cluster>,
-) -> Stream<'a, (u32, ReplicaPayload), stream::Windowed, D::Cluster> {
+    checkpoint_frequency: RuntimeData<&'a usize>,
+) -> (Stream<'a, i32, stream::Windowed, D::Cluster>, Stream<'a, (u32, ReplicaPayload), stream::Windowed, D::Cluster>) {
     let (r_buffered_payloads_complete_cycle, r_buffered_payloads) = flow.cycle(replicas);
-    // p_to_replicas.clone().for_each(q!(|payload: ReplicaPayload| println!("Replica received payload: {:?}", payload)));
+    // p_to_replicas.inspect(q!(|payload: ReplicaPayload| println!("Replica received payload: {:?}", payload)));
     let r_sorted_payloads = p_to_replicas
         .clone()
         .tick_batch()
@@ -602,29 +646,52 @@ fn replica<'a, D: Deploy<'a, ClusterId = u32>>(
             i32
         )| highest_seq))
         .defer_tick();
-    r_highest_seq_complete_cycle.complete(r_new_highest_seq);
+    r_highest_seq_complete_cycle.complete(r_new_highest_seq.clone());
+
+    // Send checkpoints to the acceptors when we've processed enough payloads
+    let (r_checkpointed_seqs_complete_cycle, r_checkpointed_seqs) = flow.cycle(replicas);
+    let r_max_checkpointed_seq = r_checkpointed_seqs
+        .all_ticks()
+        .fold(q!(|| -1), q!(|max_seq: &mut i32, seq: i32| {
+            if seq > *max_seq {
+                *max_seq = seq;
+            }
+        }));
+    let r_checkpoint_seq_new = r_max_checkpointed_seq
+        .zip_with_singleton(r_new_highest_seq)
+        .filter_map(q!(|(max_checkpointed_seq, new_highest_seq): (i32, i32)|
+            if new_highest_seq - max_checkpointed_seq >= *checkpoint_frequency as i32 {
+                Some(new_highest_seq)
+            } else {
+                None
+            }
+        ))
+        .defer_tick();
+    r_checkpointed_seqs_complete_cycle.complete(r_checkpoint_seq_new.clone());
 
     // Tell clients that the payload has been committed. All ReplicaPayloads contain the client's machine ID (to string) as value.
-    p_to_replicas
+    let r_to_clients = p_to_replicas
         .tick_batch()
         .map(q!(|payload: ReplicaPayload| (
             payload.value.parse::<u32>().unwrap(),
             payload
-        )))
+        )));
+    (r_checkpoint_seq_new, r_to_clients)
 }
 
 // Clients. All relations for clients will be prefixed with c. All ClientPayloads will contain the virtual client number as key and the client's machine ID (to string) as value. Expects p_to_clients_leader_elected containing Ballots whenever the leader is elected, and r_to_clients_payload_applied containing ReplicaPayloads whenever a payload is committed. Outputs (leader address, ClientPayload) when a new leader is elected or when the previous payload is committed.
 fn client<'a, D: Deploy<'a, ClusterId = u32>>(
     clients: &D::Cluster,
     p_to_clients_leader_elected: Stream<'a, Ballot, stream::Async, D::Cluster>,
-    r_to_clients_payload_applied: Stream<'a, ReplicaPayload, stream::Async, D::Cluster>,
+    r_to_clients_payload_applied: Stream<'a, (u32, ReplicaPayload), stream::Async, D::Cluster>,
     flow: &FlowBuilder<'a, D>,
     num_clients_per_node: RuntimeData<&'a usize>,
     median_latency_window_size: RuntimeData<&'a usize>,
+    f: RuntimeData<&'a usize>,
 ) -> Stream<'a, (u32, ClientPayload), stream::Windowed, D::Cluster> {
     let c_id = clients.self_id();
-    // c_leader_ballots.clone().for_each(q!(|ballot: Ballot| println!("Client notified that leader was elected: {:?}", ballot)));
-    // r_to_clients_payload_applied.clone().for_each(q!(|payload: ReplicaPayload| println!("Client received payload: {:?}", payload)));
+    // c_leader_ballots.inspect(q!(|ballot: Ballot| println!("Client notified that leader was elected: {:?}", ballot)));
+    // r_to_clients_payload_applied.inspect(q!(|payload: ReplicaPayload| println!("Client received payload: {:?}", payload)));
     // Only keep the latest leader
     let c_max_leader_ballot = p_to_clients_leader_elected.all_ticks().reduce(q!(
         |curr_max_ballot: &mut Ballot, new_ballot: Ballot| {
@@ -646,16 +713,38 @@ fn client<'a, D: Deploy<'a, ClusterId = u32>>(
                         value: c_id.to_string()
                     }
                 ))));
-    // Whenever replicas confirm that a payload was committed, send another payload
-    let c_new_payloads_when_committed = r_to_clients_payload_applied
-        .clone()
+    // Whenever replicas confirm that a payload was committed, collected it and wait for a quorum
+    let (c_pending_quorum_payloads_complete_cycle, c_pending_quorum_payloads) = flow.cycle(clients);
+    let c_received_payloads = r_to_clients_payload_applied
         .tick_batch()
+        .map(q!(|(sender, replica_payload): (u32, ReplicaPayload)| (replica_payload.key, sender)))
+        .union(c_pending_quorum_payloads);
+    let c_received_quorum_payloads = c_received_payloads
+        .clone()
+        .fold_keyed(q!(|| 0), q!(|curr_count: &mut usize, sender: u32| {
+            *curr_count += 1; // Assumes the same replica will only send commit once
+        }))
+        .filter_map(q!(|(key, count): (u32, usize)| {
+            if count == *f + 1 {
+                Some(key)
+            }
+            else {
+                None
+            }
+        }));
+    let c_new_pending_quorum_payloads = c_received_payloads
+        .anti_join(c_received_quorum_payloads.clone())
+        .defer_tick();
+    c_pending_quorum_payloads_complete_cycle.complete(c_new_pending_quorum_payloads);
+    // Whenever all replicas confirm that a payload was committed, send another payload
+    let c_new_payloads_when_committed = c_received_quorum_payloads
+        .clone()
         .zip_with_singleton(c_max_leader_ballot.clone())
-        .map(q!(|(payload, leader_ballot): (ReplicaPayload, Ballot)| (
+        .map(q!(move |(key, leader_ballot): (u32, Ballot)| (
             leader_ballot.get_id(),
             ClientPayload {
-                key: payload.key,
-                value: payload.value
+                key: key,
+                value: c_id.to_string()
             }
         )));
     let c_to_proposers = c_new_payloads_when_leader_elected.union(c_new_payloads_when_committed);
@@ -665,15 +754,13 @@ fn client<'a, D: Deploy<'a, ClusterId = u32>>(
     let c_new_timers_when_leader_elected = c_new_leader_ballot
         .map(q!(|_: Ballot| SystemTime::now()))
         .flat_map(q!(move |now: SystemTime| (0..*num_clients_per_node)
-            .map(move |virtual_id| (virtual_id, now))));
-    let c_updated_timers =
-        r_to_clients_payload_applied
-            .clone()
-            .tick_batch()
-            .map(q!(|payload: ReplicaPayload| (
-                payload.key as usize,
-                SystemTime::now()
-            )));
+        .map(move |virtual_id| (virtual_id, now))));
+    let c_updated_timers = c_received_quorum_payloads
+        .clone()
+        .map(q!(|key: u32| (
+            key as usize,
+            SystemTime::now()
+        )));
     let c_new_timers = c_timers
         .clone() // Update c_timers in tick+1 so we can record differences during this tick (to track latency)
         .union(c_new_timers_when_leader_elected)
@@ -737,9 +824,8 @@ fn client<'a, D: Deploy<'a, ClusterId = u32>>(
                 -1.0
             }
         }));
-    let c_throughput_new_batch = r_to_clients_payload_applied
+    let c_throughput_new_batch = c_received_quorum_payloads
         .clone()
-        .tick_batch()
         .count()
         .continue_unless(c_stats_output_timer.clone())
         .map(q!(|batch_size: usize| (batch_size, false)));
@@ -896,7 +982,7 @@ fn p_p1a<'a, D: Deploy<'a, ClusterId = u32>>(
         // .continue_if(p_is_leader.clone().count().filter(q!(|c| *c == 0)).inspect(q!(|c| println!("Proposer is_leader count: {}", c))))
         .continue_unless(p_is_leader.clone())
         .filter(q!(|(_, latest_received_i_am_leader): &(Instant, SystemTime)| SystemTime::now() - *i_am_leader_check_timeout > *latest_received_i_am_leader));
-    // p_leader_expired.clone().for_each(q!(|_| println!("Proposer leader expired")));
+    // p_leader_expired.inspect(q!(|_| println!("Proposer leader expired")));
 
     let p_to_acceptors_p1a = p_ballot_num
         .clone()
@@ -918,6 +1004,7 @@ pub fn paxos_runtime<'a>(
     f: RuntimeData<&'a usize>,
     num_clients_per_node: RuntimeData<&'a usize>,
     median_latency_window_size: RuntimeData<&'a usize>,
+    checkpoint_frequency: RuntimeData<&'a usize>,
     i_am_leader_send_timeout: RuntimeData<&'a Duration>,
     i_am_leader_check_timeout: RuntimeData<&'a Duration>,
     i_am_leader_check_timeout_delay_multiplier: RuntimeData<&'a usize>,
@@ -931,6 +1018,7 @@ pub fn paxos_runtime<'a>(
         f,
         num_clients_per_node,
         median_latency_window_size,
+        checkpoint_frequency,
         i_am_leader_send_timeout,
         i_am_leader_check_timeout,
         i_am_leader_check_timeout_delay_multiplier,
@@ -1031,6 +1119,7 @@ mod tests {
                     })
                     .collect()
             }),
+            RuntimeData::new("Fake"),
             RuntimeData::new("Fake"),
             RuntimeData::new("Fake"),
             RuntimeData::new("Fake"),
