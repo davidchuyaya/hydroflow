@@ -9,8 +9,6 @@ use hydroflow_plus_cli_integration::*;
 use serde::{Deserialize, Serialize};
 use stageleft::*;
 use tokio::time::Instant;
-use watermill::quantile::RollingQuantile;
-use watermill::stats::Univariate;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
 struct ClientPayload {
@@ -120,11 +118,11 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     let (p_to_proposers_i_am_leader_complete_cycle, p_to_proposers_i_am_leader) =
         flow.cycle(&proposers);
     let (a_to_proposers_p1b_complete_cycle, a_to_proposers_p1b) = flow.cycle(&proposers);
-    // a_to_proposers_p1b.inspect(q!(|(_, p1b): (u32, P1b)| println!("Proposer received P1b: {:?}", p1b)));
+    a_to_proposers_p1b.clone().for_each(q!(|(_, p1b): (u32, P1b)| println!("Proposer received P1b: {:?}", p1b)));
     let (a_to_proposers_p2b_complete_cycle, a_to_proposers_p2b) = flow.cycle(&proposers);
-    // a_to_proposers_p2b.inspect(q!(|(_, p2b): (u32, P2b)| println!("Proposer received P2b: {:?}", p2b)));
-    // p_to_proposers_i_am_leader.inspect(q!(|ballot: Ballot| println!("Proposer received I am leader: {:?}", ballot)));
-    // c_to_proposers.inspect(q!(|payload: ClientPayload| println!("Client sent proposer payload: {:?}", payload)));
+    // a_to_proposers_p2b.clone().for_each(q!(|(_, p2b): (u32, P2b)| println!("Proposer received P2b: {:?}", p2b)));
+    // p_to_proposers_i_am_leader.clone().for_each(q!(|ballot: Ballot| println!("Proposer received I am leader: {:?}", ballot)));
+    // c_to_proposers.clone().for_each(q!(|payload: ClientPayload| println!("Client sent proposer payload: {:?}", payload)));
 
     let p_received_max_ballot = p_max_ballot::<D>(
         a_to_proposers_p1b.clone(),
@@ -181,8 +179,8 @@ pub fn paxos<'a, D: Deploy<'a, ClusterId = u32>>(
     flow.source_iter(&acceptors, q!(["Acceptors say hello"]))
         .for_each(q!(|s| println!("{}", s)));
     let (r_to_acceptors_checkpoint_complete_cycle, r_to_acceptors_checkpoint) = flow.cycle(&acceptors);
-    // p_to_acceptors_p1a.inspect(q!(|p1a: P1a| println!("Acceptor received P1a: {:?}", p1a)));
-    // p_to_acceptors_p2a.inspect(q!(|p2a: P2a| println!("Acceptor received P2a: {:?}", p2a)));
+    p_to_acceptors_p1a.clone().for_each(q!(|p1a: P1a| println!("Acceptor received P1a: {:?}", p1a)));
+    // p_to_acceptors_p2a.clone().for_each(q!(|p2a: P2a| println!("Acceptor received P2a: {:?}", p2a)));
     let (a_to_proposers_p1b_new, a_to_proposers_p2b_new) =
         acceptor::<D>(p_to_acceptors_p1a, p_to_acceptors_p2a, r_to_acceptors_checkpoint, &proposers, f);
     a_to_proposers_p1b_complete_cycle.complete(a_to_proposers_p1b_new);
@@ -208,40 +206,42 @@ fn acceptor<'a, D: Deploy<'a, ClusterId = u32>>(
     Stream<'a, (u32, P2b), stream::Async, D::Cluster>,
 ) {
     // Get the latest checkpoint sequence per replica
-    r_to_acceptors_checkpoint.for_each(q!(|(_, seq): (u32, i32)| println!("Acceptor received checkpoint: {:?}", seq)));
-    // let a_checkpoint_largest_seqs = r_to_acceptors_checkpoint
-    //     .all_ticks()
-    //     .reduce_keyed(q!(|curr_seq: &mut i32, seq: i32| {
-    //         if seq > *curr_seq {
-    //             *curr_seq = seq;
-    //         }
-    //     }));
-    // let a_checkpoints_quorum_reached = a_checkpoint_largest_seqs
-    //     .clone()
-    //     .count()
-    //     .filter_map(q!(|num_received: usize| if num_received == *f + 1 {
-    //         Some(true)
-    //     } else {
-    //         None
-    //     }));
-    // // Find the smallest checkpoint seq that everyone agrees to
-    // let a_min_checkpoint = a_checkpoint_largest_seqs
-    //     .continue_if(a_checkpoints_quorum_reached)
-    //     .fold(q!(|| i32::MAX), q!(|min_seq: &mut i32, (sender, seq): (u32, i32)| {
-    //         if seq < *min_seq {
-    //             *min_seq = seq;
-    //         }
-    //     }));
-    // let a_checkpoint_seq = a_min_checkpoint
-    //     .all_ticks()
-    //     .fold(q!(|| -1), q!(|last_checkpoint_seq: &mut i32, min_checkpoint_seq: i32| {
-    //         if min_checkpoint_seq > *last_checkpoint_seq {
-    //             *last_checkpoint_seq = min_checkpoint_seq;
-    //         }
-    //     }));
-    // // TODO: Figure out how to get checkpoint seq from previous tick as well...
-    // let a_checkpoint_delete_range = a_checkpoint_seq
-    //     .delta(); // Only if the checkpoint has changed
+    let a_checkpoint_largest_seqs = r_to_acceptors_checkpoint
+        .all_ticks()
+        .reduce_keyed(q!(|curr_seq: &mut i32, seq: i32| {
+            if seq > *curr_seq {
+                *curr_seq = seq;
+            }
+        }));
+    let a_checkpoints_quorum_reached = a_checkpoint_largest_seqs
+        .clone()
+        .count()
+        .filter_map(q!(|num_received: usize| if num_received == *f + 1 {
+            Some(true)
+        } else {
+            None
+        }));
+    // Find the smallest checkpoint seq that everyone agrees to, track whenever it changes
+    let a_new_checkpoint = a_checkpoint_largest_seqs
+        .continue_if(a_checkpoints_quorum_reached)
+        .fold(q!(|| -1), q!(|min_seq: &mut i32, (sender, seq): (u32, i32)| {
+            if *min_seq == -1 || seq < *min_seq {
+                *min_seq = seq;
+            }
+        }))
+        .delta()
+        .map(q!(|min_seq: i32| (min_seq, P2a { // Create tuple with checkpoint number and dummy p2a
+            ballot: Ballot {
+                num: 0,
+                id: 0
+            },
+            slot: -1,
+            value: ClientPayload {
+                key: 0,
+                value: "".to_string(),
+            }
+        })));
+        // .inspect(q!(|(min_seq, p2a): &(i32, P2a)| println!("Acceptor new checkpoint: {:?}", min_seq)));
 
     let a_max_ballot = p_to_acceptors_p1a.clone().all_ticks().fold(
         q!(|| Ballot { num: 0, id: 0 }),
@@ -251,32 +251,51 @@ fn acceptor<'a, D: Deploy<'a, ClusterId = u32>>(
             }
         }),
     );
-    // TODO: Delete checkpointed values
-    let a_log = p_to_acceptors_p2a
+    let a_p2as_to_place_in_log = p_to_acceptors_p2a
         .clone()
         .tick_batch()
-        .zip_with_singleton(a_max_ballot.clone())
-        .filter(q!(|(p2a, max_ballot): &(P2a, Ballot)| p2a.ballot >= *max_ballot)) // Don't consider p2as if the current ballot is higher
-        .map(q!(|(p2a, _): (P2a, Ballot)| (p2a.slot, p2a))) // Group by slot
-        .all_ticks()
-        .reduce_keyed(q!(|curr_entry: &mut P2a, new_entry: P2a| {
-            if new_entry.ballot > curr_entry.ballot { // Update the log
-                *curr_entry = new_entry;
+        .zip_with_singleton(a_max_ballot.clone()) // Don't consider p2as if the current ballot is higher
+        .filter_map(q!(|(p2a, max_ballot): (P2a, Ballot)| 
+            if p2a.ballot >= max_ballot {
+                Some((-1, p2a)) // Signal that this isn't a checkpoint with -1
+            } else {
+                None
             }
-        }))
-        .continue_if(p_to_acceptors_p1a.clone().tick_batch()) // TODO: Hack to avoid creating HashMap until we receive p1a
-        // TODO: Would be nice if there was a "collect" operator here. Will need later to partition the log anyway
-        .fold(q!(|| HashMap::<i32, LogValue>::new()), q!(|log: &mut HashMap::<i32, LogValue>, (slot, p2a): (i32, P2a)| {
-            log.insert(slot, LogValue { ballot: p2a.ballot, value: p2a.value });
+        ));
+    let a_log = a_p2as_to_place_in_log
+        .union(a_new_checkpoint)
+        .all_ticks()
+        .fold(q!(|| (-1, HashMap::<i32, LogValue>::new())), q!(|(prev_checkpoint, log): &mut (i32, HashMap::<i32, LogValue>), (new_checkpoint, p2a): (i32, P2a)| {
+            if new_checkpoint != -1 {
+                // This is a checkpoint message. Delete all entries up to the checkpoint
+                for slot in *prev_checkpoint..new_checkpoint {
+                    log.remove(&slot);
+                }
+                *prev_checkpoint = new_checkpoint;
+            } else {
+                // This is a regular p2a message. Insert it into the log if it is not checkpointed and has a higher ballot than what was there before
+                if p2a.slot > *prev_checkpoint {
+                    match log.get(&p2a.slot) {
+                        None => {
+                            log.insert(p2a.slot, LogValue { ballot: p2a.ballot, value: p2a.value });
+                        },
+                        Some(prev_p2a) => {
+                            if p2a.ballot > prev_p2a.ballot {
+                                log.insert(p2a.slot, LogValue { ballot: p2a.ballot, value: p2a.value });
+                            }
+                        }
+                    };
+                }
+            }
         }));
 
     let a_to_proposers_p1b_new = p_to_acceptors_p1a
         .tick_batch()
         .zip_with_singleton(a_max_ballot.clone())
         .zip_with_singleton(a_log)
-        .map(q!(|((p1a, max_ballot), log): (
+        .map(q!(|((p1a, max_ballot), (prev_checkpoint, log)): (
             (P1a, Ballot),
-            HashMap::<i32, LogValue>
+            (i32, HashMap::<i32, LogValue>)
         )| (
             p1a.ballot.id,
             P1b {
@@ -690,8 +709,8 @@ fn client<'a, D: Deploy<'a, ClusterId = u32>>(
     f: RuntimeData<&'a usize>,
 ) -> Stream<'a, (u32, ClientPayload), stream::Windowed, D::Cluster> {
     let c_id = clients.self_id();
-    // c_leader_ballots.inspect(q!(|ballot: Ballot| println!("Client notified that leader was elected: {:?}", ballot)));
-    // r_to_clients_payload_applied.inspect(q!(|payload: ReplicaPayload| println!("Client received payload: {:?}", payload)));
+    p_to_clients_leader_elected.clone().for_each(q!(|ballot: Ballot| println!("Client notified that leader was elected: {:?}", ballot)));
+    // r_to_clients_payload_applied.clone().inspect(q!(|payload: &(u32, ReplicaPayload)| println!("Client received payload: {:?}", payload)));
     // Only keep the latest leader
     let c_max_leader_ballot = p_to_clients_leader_elected.all_ticks().reduce(q!(
         |curr_max_ballot: &mut Ballot, new_ballot: Ballot| {
@@ -792,38 +811,33 @@ fn client<'a, D: Deploy<'a, ClusterId = u32>>(
         )))
         .union(c_latency_reset)
         .all_ticks()
-        .fold(
-            q!(|| (
-                Rc::new(RefCell::new(
-                    RollingQuantile::<f64>::new(0.5_f64, *median_latency_window_size).unwrap()
-                )),
-                false
-            )),
-            q!(
-                |(latencies, has_any_value): &mut (Rc<RefCell<RollingQuantile<f64>>>, bool),
+        .fold( // Create window with ring buffer using vec + wraparound index
+            // TODO: Would be nice if I could use vec![] instead, but that doesn't work in HF+ with RuntimeData *median_latency_window_size
+            q!(|| (Rc::new(RefCell::new(Vec::<u128>::with_capacity(*median_latency_window_size))), 0usize, false)),
+            q!(|(latencies, write_index, has_any_value): &mut (Rc<RefCell<Vec<u128>>>, usize, bool),
                  latency: Option<u128>| {
-                    // 0.5 quantile = median
+                    let mut latencies_mut = latencies.borrow_mut();
                     if let Some(latency) = latency {
-                        latencies.borrow_mut().update(latency as f64);
+                        // Insert into latencies
+                        if let Some(prev_latency) = latencies_mut.get_mut(*write_index) {
+                            *prev_latency = latency;
+                        } else {
+                            latencies_mut.push(latency);
+                        }
                         *has_any_value = true;
-                    } else {
-                        *latencies.borrow_mut() =
-                            RollingQuantile::<f64>::new(0.5_f64, *median_latency_window_size)
-                                .unwrap();
+                        // Increment write index and wrap around
+                        *write_index += 1;
+                        if *write_index == *median_latency_window_size {
+                            *write_index = 0;
+                        }
+                    } else { // reset latencies
+                        latencies_mut.clear();
+                        *write_index = 0;
+                        *has_any_value = false;
                     }
                 }
             ),
-        )
-        .map(q!(|(latencies, has_any_value): (
-            Rc<RefCell<RollingQuantile<f64>>>,
-            bool
-        )| {
-            if has_any_value {
-                latencies.borrow_mut().get()
-            } else {
-                -1.0
-            }
-        }));
+        );
     let c_throughput_new_batch = c_received_quorum_payloads
         .clone()
         .count()
@@ -855,11 +869,20 @@ fn client<'a, D: Deploy<'a, ClusterId = u32>>(
     c_stats_output_timer
         .zip_with_singleton(c_latencies)
         .zip_with_singleton(c_throughput)
-        .for_each(q!(|((_, latencies_us), (throughput, num_ticks)): (
-            ((), f64),
+        .for_each(q!(|(((), (latencies, write_index, has_any_value)), (throughput, num_ticks)): (
+            ((), (Rc<RefCell<Vec<u128>>>, usize, bool)),
             (u32, u32)
         )| {
-            println!("Median latency: {}ms", latencies_us / 1000.0);
+            let mut latencies_mut = latencies.borrow_mut();
+            let median_latency = if has_any_value {
+                // let (lesser, median, greater) = latencies.borrow_mut().select_nth_unstable(*median_latency_window_size / 2);
+                // TODO: Replace below with above once HF+ supports tuples
+                let out = latencies_mut.select_nth_unstable(*median_latency_window_size / 2);
+                *out.1 
+            } else {
+                0
+            };
+            println!("Median latency: {}ms", median_latency as f64 / 1000.0);
             println!("Throughput: {} requests/s", throughput);
             println!("Num ticks per second: {}", num_ticks);
         }));
@@ -982,7 +1005,7 @@ fn p_p1a<'a, D: Deploy<'a, ClusterId = u32>>(
         // .continue_if(p_is_leader.clone().count().filter(q!(|c| *c == 0)).inspect(q!(|c| println!("Proposer is_leader count: {}", c))))
         .continue_unless(p_is_leader.clone())
         .filter(q!(|(_, latest_received_i_am_leader): &(Instant, SystemTime)| SystemTime::now() - *i_am_leader_check_timeout > *latest_received_i_am_leader));
-    // p_leader_expired.inspect(q!(|_| println!("Proposer leader expired")));
+    p_leader_expired.clone().for_each(q!(|_| println!("Proposer leader expired")));
 
     let p_to_acceptors_p1a = p_ballot_num
         .clone()
