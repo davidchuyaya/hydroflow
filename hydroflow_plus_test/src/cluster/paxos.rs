@@ -1063,7 +1063,7 @@ mod tests {
         let builder = hydroflow_plus::FlowBuilder::new();
         let f = 1;
         let num_clients = 1;
-        let num_replicas = 1;
+        let num_replicas = f+1;
         let profile = "release";
         let (proposers, acceptors, clients, replicas) = super::paxos(
             &builder,
