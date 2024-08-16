@@ -344,7 +344,10 @@ impl<'a, T, N: Location + Clone> Stream<'a, T, Windowed, N> {
     pub fn sample_every(
         self,
         duration: impl Quoted<'a, std::time::Duration> + Copy + 'a,
-    ) -> Stream<'a, T, Windowed, N> {
+    ) -> Stream<'a, T, Windowed, N>
+    where
+        T: Clone,
+    {
         let interval = duration.splice();
 
         let samples = Stream::<'a, hydroflow::tokio::time::Instant, Windowed, N>::new(
@@ -590,8 +593,11 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     {
         let ids = other.ids();
 
-        self.flat_map(q!(|b| ids.iter().map(move |id| (id.clone(), b.clone()))))
-            .send_bincode(other)
+        self.flat_map(q!(|b| ids.iter().map(move |id| (
+            ::std::clone::Clone::clone(id),
+            ::std::clone::Clone::clone(&b)
+        ))))
+        .send_bincode(other)
     }
 
     pub fn broadcast_bincode_interleaved<N2: Location + Cluster<'a> + Clone, Tag, V>(
@@ -600,7 +606,7 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     ) -> Stream<'a, T, Async, N2>
     where
         N: HfSend<N2, V, In<T> = (N2::Id, T), Out<T> = (Tag, T)>,
-        T: Serialize + DeserializeOwned,
+        T: Clone + Serialize + DeserializeOwned,
         N2::Id: Clone,
         T: Clone,
     {
@@ -618,8 +624,11 @@ impl<'a, T, W, N: Location + Clone> Stream<'a, T, W, N> {
     {
         let ids = other.ids();
 
-        self.flat_map(q!(|b| ids.iter().map(move |id| (id.clone(), b.clone()))))
-            .send_bytes(other)
+        self.flat_map(q!(|b| ids.iter().map(move |id| (
+            ::std::clone::Clone::clone(id),
+            ::std::clone::Clone::clone(&b)
+        ))))
+        .send_bytes(other)
     }
 
     pub fn broadcast_bytes_interleaved<N2: Location + Cluster<'a> + Clone, Tag, V>(
