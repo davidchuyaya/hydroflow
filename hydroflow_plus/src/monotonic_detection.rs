@@ -2,7 +2,7 @@ use crate::ir::*;
 
 struct Edge {
     source: HfPlusNode,
-    target: HfPlusNode,
+    target: HfPlusNode, 
     is_monotonic: bool,
 }
 
@@ -58,17 +58,25 @@ mod tests {
         let source2 = flow.source_iter(&process, q!(3..4)).union(source1).for_each(q!(|n| println!("{}", n)));
 
         let built = flow.extract();
+        println!("Original Graph: [");
+        for node in built.ir.clone() {
+            println!("{}", node);
+            println!(" ");
+        }
+        println!("]");
         // insta::assert_debug_snapshot!(built.ir());
         let mut seen_tees = Default::default();
         let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
         .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
         .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
-    
+        println!("Result in Graph: [");
         // Debug print the resulting graph
         for node in &source {
-            println!("Result in graph: {}", node);
+            println!("{}", node);
+            println!(" ");
         }
+        println!("]");
     }
 
     #[test]
@@ -80,16 +88,24 @@ mod tests {
         let ret = source.map(q!(|i| i + 1)).for_each(q!(|n| println!("{}", n)));
 
         let built = flow.extract();
+        println!("Original Graph: [");
+        for node in built.ir.clone() {
+            println!("{}", node);
+            println!(" ");
+        }
+        println!("]");
         let mut seen_tees = Default::default();
         let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
         .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
         .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
-    
+        println!("Result in Graph: [");
         // Debug print the resulting graph
         for node in &source {
-            println!("Result in graph: {}", node);
+            println!("{}", node);
+            println!(" ");
         }
+        println!("]");
     }
 
     #[test]
@@ -101,6 +117,12 @@ mod tests {
         let ret = source.flat_map(q!(|i| i)).for_each(q!(|n| println!("{}", n)));
 
         let built = flow.extract();
+        println!("Original Graph: [");
+        for node in built.ir.clone() {
+            println!("{}", node);
+            println!(" ");
+        }
+        println!("]");
         let mut seen_tees = Default::default();
         let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
@@ -108,9 +130,13 @@ mod tests {
         .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
     
         // Debug print the resulting graph
+        println!("Result in Graph: [");
+        // Debug print the resulting graph
         for node in &source {
-            println!("Result in graph: {}", node);
+            println!("{}", node);
+            println!(" ");
         }
+        println!("]");
     }
 
     #[test]
@@ -123,16 +149,25 @@ mod tests {
         let ret2 = source.for_each(q!(|n| println!("{}", n)));
 
         let built = flow.extract();
+        println!("Original Graph: [");
+        for node in built.ir.clone() {
+            println!("{}", node);
+            println!(" ");
+        }
+        println!("]");
         let mut seen_tees = Default::default();
         let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
         .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
         .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
     
+        println!("Result in Graph: [");
         // Debug print the resulting graph
         for node in &source {
-            println!("Result in graph: {}", node);
+            println!("{}", node);
+            println!(" ");
         }
+        println!("]");
     }
 
     #[test]
@@ -144,16 +179,25 @@ mod tests {
         let ret = source.all_ticks().for_each(q!(|n| println!("{}", n)));
 
         let built = flow.extract();
+        println!("Original Graph: [");
+        for node in built.ir.clone() {
+            println!("{}", node);
+            println!(" ");
+        }
+        println!("]");
         let mut seen_tees = Default::default();
         let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
         .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
         .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
     
+        println!("Result in Graph: [");
         // Debug print the resulting graph
         for node in &source {
-            println!("Result in graph: {}", node);
+            println!("{}", node);
+            println!(" ");
         }
+        println!("]");
     }
 
     #[test]
@@ -167,17 +211,24 @@ mod tests {
         let ret = cycle.all_ticks().for_each(q!(|n| println!("{}", n)));
 
         let built = flow.extract();
-        println!("Graph did not inverted: {:?}", built.ir);
-        let mut seen_tees = Default::default();
+        println!("Original Graph: [");
+        for node in built.ir.clone() {
+            println!("{}", node);
+            println!(" ");
+        }
+        println!("]");        let mut seen_tees = Default::default();
         let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
         .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
         .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
     
+        println!("Result in Graph: [");
         // Debug print the resulting graph
         for node in &source {
-            println!("Result in graph: {}", node);
+            println!("{}", node);
+            println!(" ");
         }
+        println!("]");
     }
 
     #[test]

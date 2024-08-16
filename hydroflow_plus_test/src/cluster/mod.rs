@@ -4,3 +4,4 @@ pub mod map_reduce;
 pub mod paxos;
 pub mod pbft;
 pub mod simple_cluster;
+pub mod two_pc;

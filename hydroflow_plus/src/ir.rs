@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::fmt;
 
+use hydroflow::tokio::signal;
 use hydroflow_lang::graph::FlatGraphBuilder;
 use hydroflow_lang::parse::Pipeline;
 use proc_macro2::{Span, TokenStream};
@@ -70,62 +71,6 @@ pub enum HfPlusGraphNode {
         next: Vec<Rc<RefCell<HfPlusGraphNode>>>,
     },
 }
-
-impl fmt::Display for HfPlusGraphNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HfPlusGraphNode::HfPlusLeaf(leaf) => match leaf {
-                HfPlusLeaf::ForEach { f: func, .. } => {
-                    write!(f, "ForEach(f: {:?})", func)
-                }
-                HfPlusLeaf::DestSink { .. } => write!(f, "DestSink"),
-                HfPlusLeaf::CycleSink { .. } => write!(f, "CycleSink"),
-            },
-            
-            HfPlusGraphNode::HfPlusNode { node, next } => {
-                match node {
-                    HfPlusNode::Source { source, location_id } => {
-                        write!(f, "Source(source: {:?}, location_id: {})", source, location_id)?
-                    }
-                    HfPlusNode::Union(left, right) => {
-                        write!(f, "Union(left: {:?}, right: {:?})", left, right)?
-                    }
-                    o => write!(f, "{:?}", o)?, // 处理其他节点类型
-                }
-                if !next.is_empty() {
-                    write!(f, " -> ")?;
-                    for (i, child) in next.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, " | ")?; // 多个分支的情况
-                        }
-                        write!(f, "{}", child.borrow())?;
-                    }
-                }
-                Ok(())
-            }
-            HfPlusGraphNode::HfPlusSource { node, next } => {
-                match node {
-                    HfPlusNode::Source { source, location_id } => {
-                        write!(f, "Source(source: {:?}, location_id: {})", source, location_id)?
-                    }
-                    o => write!(f, "{:?}", o)?, // 处理其他节点类型
-                }
-                if !next.is_empty() {
-                    write!(f, " -> ")?;
-                    for (i, child) in next.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, " | ")?; // 多个分支的情况
-                        }
-                        write!(f, "{}", child.borrow())?;
-                    }
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-
 
 /// An leaf in a Hydroflow+ graph, which is an pipeline that doesn't emit
 /// any downstream values. Traversals over the dataflow graph and
@@ -1438,6 +1383,273 @@ impl HfPlusNode {
 
                 (receiver_stream_ident, to_location)
             }
+        }
+    }
+}
+
+
+/* 
+
+    Some formatted output for better visualization.
+
+*/
+
+impl fmt::Display for HfPlusGraphNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HfPlusGraphNode::HfPlusLeaf(leaf) => match leaf {
+                HfPlusLeaf::ForEach { f: func, .. } => {
+                    write!(f, "ForEach(f: {})", func)
+                }
+                HfPlusLeaf::DestSink { .. } => write!(f, "DestSink"),
+                HfPlusLeaf::CycleSink { .. } => write!(f, "CycleSink"),
+            },
+            
+            HfPlusGraphNode::HfPlusNode { node, next } => {
+                match node {
+                    HfPlusNode::Source { source, location_id } => {
+                        write!(f, "Source(source: {:?}, location_id: {})", source, location_id)?
+                    }
+                    HfPlusNode::Placeholder => write!(f, "Placeholder")?,
+                    HfPlusNode::CycleSource { ident, location_id } => {
+                        write!(f, "CycleSource(ident, location_id: {})", location_id)?
+                    }
+                    HfPlusNode::Tee { inner } => {
+                        write!(f, "Tee(inner: {:?})", inner)?
+                    }
+                    HfPlusNode::Persist(inner) => {
+                        write!(f, "Persist(inner)")?
+                    }
+                    HfPlusNode::Delta(inner) => {
+                        write!(f, "Delta(inner)")?
+                    }
+                    HfPlusNode::CrossProduct(left, right) => {
+                        write!(f, "CrossProduct(left, right)")?
+                    }
+                    HfPlusNode::ZipWithSingleton(left, right) => {
+                        write!(f, "ZipWithSingleton(left, right)")?
+                    }
+                    HfPlusNode::Join(left, right) => {
+                        write!(f, "Join(left, right)")?
+                    }
+                    HfPlusNode::Union(_left, _right) => {
+                        // write!(f, "Union(left, right)", left, right)?
+                        write!(f, "Union(left, right)")?
+                    }
+                    HfPlusNode::Difference(left, right) => {
+                        write!(f, "Difference(left, right)")?
+                    }
+                    HfPlusNode::AntiJoin(left, right) => {
+                        write!(f, "AntiJoin(left, right)")?
+                    }
+                    HfPlusNode::Map { f:func, input } => {
+                        write!(f, "Map(f: {}, input)", func)?
+                    }
+                    HfPlusNode::FlatMap { f:func, input } => {
+                        write!(f, "FlatMap(f: {}, input)", func)?
+                    }
+                    HfPlusNode::Filter { f:func, input } => {
+                        write!(f, "Filter(f: {}, input)", func)?
+                    }
+                    HfPlusNode::FilterMap { f:func, input } => {
+                        write!(f, "FilterMap(f: {}, input)", func)?
+                    }
+                    HfPlusNode::DeferTick(inner) => {
+                        write!(f, "DeferTick(inner)")?
+                    }
+                    HfPlusNode::GateSignal(input, signal) => {
+                        write!(f, "GateSignal(input, signal)")?
+                    }
+                    HfPlusNode::Enumerate(inner) => {
+                        write!(f, "Enumerate(inner)")?
+                    }
+                    HfPlusNode::Inspect { f:func, input } => {
+                        write!(f, "Inspect(f: {}, input)", func)?
+                    }
+                    HfPlusNode::Unique(inner) => {
+                        write!(f, "Unique(inner)")?
+                    }
+                    HfPlusNode::Sort(inner) => {
+                        write!(f, "Sort(inner)")?
+                    }
+                    HfPlusNode::Fold { init, acc, input } => {
+                        write!(f, "Fold(init:{}, acc:{}, inner)", init, acc)?
+                    }
+                    HfPlusNode::FoldKeyed { init, acc, input } => {
+                        write!(f, "FoldKeyed(init:{}, acc:{}, inner)", init, acc)?
+                    }
+                    HfPlusNode::Reduce { f:func, input } => {
+                        write!(f, "Reduce(f:{}, input)", func)?
+                    }
+                    HfPlusNode::ReduceKeyed { f:func, input } => {
+                        write!(f, "ReduceKeyed(f:{}, input)", func)?
+                    }
+                    HfPlusNode::Network { to_location, serialize_pipeline, sink_expr, source_expr, deserialize_pipeline, input } => {
+                        write!(f, "Network(to_location: {}, serialize_pipeline: {:?}, sink_expr: {}, source_expr: {}, deserialize_pipeline: {:?}, input)", to_location, serialize_pipeline, sink_expr, source_expr, deserialize_pipeline)?
+                    }
+                }
+                if !next.is_empty() {
+                    write!(f, " -> ")?;
+                    for (i, child) in next.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " | ")?; // multiple output. seems there's no multiple output. TODO: change the vec! to single output
+                        }
+                        write!(f, "{}", child.borrow())?;
+                    }
+                }
+                Ok(())
+            }
+            HfPlusGraphNode::HfPlusSource { node, next } => {
+                // match node {
+                //     HfPlusNode::Source { source, location_id } => {
+                //         write!(f, "{}", source)?
+                //     }
+                //     o => write!(f, "{:?}", o)?,
+                // }
+                write!(f, "{}", node)?;
+                if !next.is_empty() {
+                    write!(f, " -> ")?;
+                    for (i, child) in next.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " | ")?; // 多个分支的情况
+                        }
+                        write!(f, "{}", child.borrow())?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl fmt::Display for DebugExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.to_token_stream())
+    }
+}
+
+impl fmt::Display for HfPlusLeaf {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HfPlusLeaf::ForEach { f: func, input } => {
+                write!(f, "ForEach(f: {}) -> {}", func, input)
+            }
+            HfPlusLeaf::DestSink { sink, input } => {
+                write!(f, "DestSink(sink: {}) -> {}", sink, input)
+            }
+            HfPlusLeaf::CycleSink { ident, location_id, input } => {
+                write!(f, "CycleSink(ident: {}, location_id: {}) -> {}", ident, location_id, input)
+            }
+        }
+    }
+}
+
+impl fmt::Display for HfPlusSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HfPlusSource::Stream(expr) => {
+                write!(f, "Stream(expr: {})", expr)
+            }
+
+            HfPlusSource::Iter(expr) => {
+                write!(f, "Iter(expr: {})", expr)
+            }
+
+            HfPlusSource::Interval(expr) => {
+                write!(f, "Interval(expr: {})", expr)
+            }
+
+            HfPlusSource::Spin() => {
+                write!(f, "Spin()")
+            }
+        }
+    }
+}
+
+impl fmt::Display for HfPlusNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HfPlusNode::Placeholder => write!(f, "Placeholder"),
+            HfPlusNode::Source { source, location_id } => {
+                write!(f, "Source(source, location_id: {}) -> {}", location_id, source)
+            }
+            HfPlusNode::CycleSource { ident, location_id } => {
+                write!(f, "CycleSource(ident, location_id: {}) -> {}", location_id, ident)
+            }
+            HfPlusNode::Tee { inner } => {
+                write!(f, "Tee(inner) -> {}", inner.borrow())
+            }
+            HfPlusNode::Persist(inner) => {
+                write!(f, "Persist(inner) -> {}", inner)
+            }
+            HfPlusNode::Delta(inner) => {
+                write!(f, "Delta(inner) -> {}", inner)
+            }
+            // format output for two input, separate with |. 
+            HfPlusNode::Union(left, right) => {
+                write!(f, "Union(left, right): left -> {} | right -> {}", left, right)
+            }
+            HfPlusNode::CrossProduct(left, right) => {
+                write!(f, "CrossProduct(left, right): left -> {} | right -> {}", left, right)
+            }
+            HfPlusNode::ZipWithSingleton(left, right) => {
+                write!(f, "ZipWithSingleton(left, right): left -> {} | right -> {}", left, right)
+            }
+            HfPlusNode::Join(left, right) => {
+                write!(f, "Join(left, right): left -> {} | right -> {}", left, right)
+            }
+            HfPlusNode::Difference(left, right) => {
+                write!(f, "Difference(left, right): left -> {} | right -> {}", left, right)
+            }
+            HfPlusNode::AntiJoin(left, right) => {
+                write!(f, "AntiJoin(left, right): left -> {}| right -> {}", left, right)
+            }
+            HfPlusNode::Map { f:func, input } => {
+                write!(f, "Map(f: {}, input) -> {}", func, input)
+            }
+            HfPlusNode::FlatMap { f:func, input } => {
+                write!(f, "FlatMap(f: {}, input) -> {}", func, input)
+            }
+            HfPlusNode::Filter { f:func, input } => {
+                write!(f, "Filter(f: {}, input) -> {}", func, input)
+            }
+            HfPlusNode::FilterMap { f:func, input } => {
+                write!(f, "FilterMap(f: {}, input) -> {}", func, input)
+            }
+            HfPlusNode::DeferTick(inner) => {
+                write!(f, "DeferTick(inner) -> {}", inner)
+            }
+            HfPlusNode::GateSignal(input, signal) => {
+                write!(f, "GateSignal(input, signal): input -> {} | signal -> {}", input, signal)
+            }
+            HfPlusNode::Enumerate(inner) => {
+                write!(f, "Enumerate(inner) -> {}", inner)
+            }
+            HfPlusNode::Inspect { f:func, input } => {
+                write!(f, "Inspect(f: {}, input) -> {}", func, input)
+            }
+            HfPlusNode::Unique(inner) => {
+                write!(f, "Unique(inner) -> {}", inner)
+            }
+            HfPlusNode::Sort(inner) => {
+                write!(f, "Sort(inner) -> {}", inner)
+            }
+            HfPlusNode::Fold { init, acc, input } => {
+                write!(f, "Fold(init:{}, acc:{}, inner) -> {}", init, acc, input)
+            }
+            HfPlusNode::FoldKeyed { init, acc, input } => {
+                write!(f, "FoldKeyed(init:{}, acc:{}, inner) -> {}", init, acc, input)
+            }
+            HfPlusNode::Reduce { f:func, input } => {
+                write!(f, "Reduce(f:{}, input) -> {}", func, input)
+            }
+            HfPlusNode::ReduceKeyed { f:func, input } => {
+                write!(f, "ReduceKeyed(f:{}, input) -> {}", func, input)
+            }
+            HfPlusNode::Network { to_location, serialize_pipeline, sink_expr, source_expr, deserialize_pipeline, input } => {
+                write!(f, "Network(to_location: {}, serialize_pipeline: {:?}, sink_expr: {}, source_expr: {}, deserialize_pipeline: {:?}, input) -> {}", to_location, serialize_pipeline, sink_expr, source_expr, deserialize_pipeline, input)
+            }
+
         }
     }
 }
