@@ -216,7 +216,8 @@ mod tests {
             println!("{}", node);
             println!(" ");
         }
-        println!("]");        let mut seen_tees = Default::default();
+        println!("]");        
+        let mut seen_tees = Default::default();
         let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
         .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
@@ -241,66 +242,26 @@ mod tests {
         folded.for_each(q!(|i| println!("{}",i)));
 
         let built = flow.extract();
-        println!("Graph did not inverted: {:?}", built.ir);
+        println!("Original Graph: [");
+        for node in built.ir.clone() {
+            println!("{}", node);
+            println!(" ");
+        }
+        println!("]");        
         let mut seen_tees = Default::default();
         let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
         .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
         .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
     
+        println!("Result in Graph: [");
         // Debug print the resulting graph
         for node in &source {
-            println!("Result in graph: {}", node);
+            println!("{}", node);
+            println!(" ");
         }
+        println!("]");
     }
 
 
-    // #[test]
-    // fn monotonic_detection_through_map() {
-    //     let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
-    //     let process = flow.process(&());
-
-    //     let source1 = flow.source_iter(&process, q!(0..2));
-    //     let source2 = flow.source_iter(&process, q!(3..4)).union(source1).for_each(q!(|n| println!("{}", n)));
-
-    //     let built = flow.extract();
-
-    //     // insta::assert_debug_snapshot!(built.ir());
-    //     let optimized = built.optimize_with(super::monotonic_detection);
-    //     // insta::assert_debug_snapshot!(optimized.ir());
-    //     // for (id, graph) in optimized.no_optimize().hydroflow_ir() {
-    //     //     insta::with_settings!({snapshot_suffix => format!("surface_graph_{id}")}, {
-    //     //         insta::assert_display_snapshot!(graph.surface_syntax_string());
-    //     //     });
-    //     // }
-    // }
-
-    // #[test]
-    // fn monotonic_detection_behind_tee() {
-    //     let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
-    //     let process = flow.process(&());
-
-    //     let before_tee = flow
-    //         .source_iter(&process, q!(0..10))
-    //         .all_ticks()
-    //         .map(q!(|v| v + 1));
-
-    //     before_tee.clone().for_each(q!(|n| println!("{}", n)));
-
-    //     before_tee.for_each(q!(|n| println!("{}", n)));
-
-    //     let built = flow.extract();
-
-    //     insta::assert_debug_snapshot!(built.ir());
-
-    //     let optimized = built.optimize_with(super::monotonic_detection);
-
-    //     insta::assert_debug_snapshot!(optimized.ir());
-
-    //     for (id, graph) in optimized.no_optimize().hydroflow_ir() {
-    //         insta::with_settings!({snapshot_suffix => format!("surface_graph_{id}")}, {
-    //             insta::assert_display_snapshot!(graph.surface_syntax_string());
-    //         });
-    //     }
-    // }
 }
