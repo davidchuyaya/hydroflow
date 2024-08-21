@@ -801,7 +801,7 @@ fn client<'a>(
 
     let c_latency_reset = c_stats_output_timer
         .clone()
-        .map(q!(|_: Instant| None))
+        .map(q!(|_: ()| None))
         .defer_tick();
 
     let c_latencies = c_timers
@@ -849,7 +849,7 @@ fn client<'a>(
 
     let c_throughput_reset = c_stats_output_timer
         .clone()
-        .map(q!(|_: Instant| (0, true)))
+        .map(q!(|_: ()| (0, true)))
         .defer_tick();
 
     let c_throughput = c_throughput_new_batch
@@ -873,7 +873,7 @@ fn client<'a>(
         .cross_singleton(c_latencies)
         .cross_singleton(c_throughput)
         .for_each(q!(move |((_, (latencies, write_index, has_any_value)), (throughput, num_ticks)): (
-            (Instant, (Rc<RefCell<Vec<u128>>>, usize, bool)),
+            ((), (Rc<RefCell<Vec<u128>>>, usize, bool)),
             (u32, u32)
         )| {
             let mut latencies_mut = latencies.borrow_mut();
@@ -994,10 +994,10 @@ fn p_p1a<'a>(
         .broadcast_bincode_interleaved(proposers);
 
     let p_latest_received_i_am_leader = p_to_proposers_i_am_leader.clone().all_ticks().fold(
-        q!(|| SystemTime::UNIX_EPOCH),
-        q!(|latest: &mut SystemTime, _: Ballot| {
+        q!(|| None),
+        q!(|latest: &mut Option<Instant>, _: Ballot| {
             // Note: May want to check received ballot against our own?
-            *latest = SystemTime::now();
+            *latest = Some(Instant::now());
         }),
     );
     // Add random delay depending on node ID so not everyone sends p1a at the same time
@@ -1006,8 +1006,14 @@ fn p_p1a<'a>(
         .cross_singleton(p_latest_received_i_am_leader.clone())
         // .inspect(q!(|v| println!("Proposer checking if leader expired")))
         // .continue_if(p_is_leader.clone().count().filter(q!(|c| *c == 0)).inspect(q!(|c| println!("Proposer is_leader count: {}", c))))
-        .continue_unless(p_is_leader.clone())
-        .filter(q!(move |(_, latest_received_i_am_leader): &(Instant, SystemTime)| SystemTime::now() - Duration::from_secs(i_am_leader_check_timeout) > *latest_received_i_am_leader));
+        .continue_unless(p_is_leader)
+        .filter(q!(move |(_, latest_received_i_am_leader): &(_, Option<Instant>)| {
+            if let Some(latest_received_i_am_leader) = latest_received_i_am_leader {
+                (Instant::now().duration_since(*latest_received_i_am_leader)) > Duration::from_secs(i_am_leader_check_timeout)
+            } else {
+                true
+            }
+        }));
     p_leader_expired.clone().for_each(q!(|_| println!("Proposer leader expired")));
 
     let p_to_acceptors_p1a = p_ballot_num
@@ -1076,6 +1082,9 @@ mod tests {
             i_am_leader_check_timeout_delay_multiplier,
         );
 
+
+        let rustflags = "-C opt-level=3 -C codegen-units=1 -C strip=none -C debuginfo=2 -C lto=off";
+
         // let mermaid_config = WriteConfig {op_text_no_imports: true, ..Default::default()};
         // use hydroflow_plus::Location;
         // let mut optimized = builder.extract().optimize_default();
@@ -1088,25 +1097,25 @@ mod tests {
         .with_cluster(
             &proposers,
             (0..f+1)
-                .map(|_| TrybuildHost::new(localhost.clone()))
+                .map(|_| TrybuildHost::new(localhost.clone()).rustflags(rustflags))
                 .collect::<Vec<_>>(),
         )
         .with_cluster(
             &acceptors,
             (0..2*f+1)
-                .map(|_| TrybuildHost::new(localhost.clone()))
+                .map(|_| TrybuildHost::new(localhost.clone()).rustflags(rustflags))
                 .collect::<Vec<_>>(),
         )
         .with_cluster(
             &clients,
             (0..num_clients)
-                .map(|_| TrybuildHost::new(localhost.clone()))
+                .map(|_| TrybuildHost::new(localhost.clone()).rustflags(rustflags))
                 .collect::<Vec<_>>(),
         )
         .with_cluster(
             &replicas,
             (0..f+1)
-                .map(|_| TrybuildHost::new(localhost.clone()))
+                .map(|_| TrybuildHost::new(localhost.clone()).rustflags(rustflags))
                 .collect::<Vec<_>>(),
         )
         .deploy(&mut deployment);
