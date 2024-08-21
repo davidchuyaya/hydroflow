@@ -24,7 +24,7 @@ pub fn compile_graph_trybuild(graph: HydroflowGraph, extra_stmts: Vec<syn::Stmt>
         partitioned_graph.as_code(&quote! { hydroflow_plus }, true, quote!(), &mut diagnostics);
 
     let source_ast: syn::File = syn::parse_quote! {
-        #![allow(unused_crate_dependencies, missing_docs)]
+        #![allow(unused_variables, unused_imports, unused_crate_dependencies, private_interfaces, missing_docs)]
 
         #[allow(unused)]
         fn __hfplus_runtime<'a>(__hydroflow_plus_trybuild_cli: &'a hydroflow_plus::util::cli::HydroCLI<hydroflow_plus_cli_integration::HydroflowPlusMeta>) -> hydroflow_plus::Hydroflow<'a> {

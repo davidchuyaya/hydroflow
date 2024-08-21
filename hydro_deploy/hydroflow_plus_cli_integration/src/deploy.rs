@@ -502,9 +502,10 @@ impl Node for DeployCluster {
 
             let source_dir = trybuild::cargo::manifest_dir().unwrap();
             let source_manifest = trybuild::dependencies::get_manifest(&source_dir).unwrap();
-            let crate_name = &source_manifest.package.name;
+            let crate_name = &source_manifest.package.name.to_string().replace("-", "_");
             let source = prettyplease::unparse(&source_ast)
                 .to_string()
+                .replace(crate_name, &format!("{crate_name}::__staged"))
                 .replace("crate::__staged", &format!("{crate_name}::__staged"));
 
             let mut hasher = Sha256::new();

@@ -801,7 +801,7 @@ fn client<'a>(
 
     let c_latency_reset = c_stats_output_timer
         .clone()
-        .map(q!(|_: Instant| None))
+        .map(q!(|_: ()| None))
         .defer_tick();
 
     let c_latencies = c_timers
@@ -849,7 +849,7 @@ fn client<'a>(
 
     let c_throughput_reset = c_stats_output_timer
         .clone()
-        .map(q!(|_: Instant| (0, true)))
+        .map(q!(|_: ()| (0, true)))
         .defer_tick();
 
     let c_throughput = c_throughput_new_batch
@@ -873,7 +873,7 @@ fn client<'a>(
         .cross_singleton(c_latencies)
         .cross_singleton(c_throughput)
         .for_each(q!(move |((_, (latencies, write_index, has_any_value)), (throughput, num_ticks)): (
-            (Instant, (Rc<RefCell<Vec<u128>>>, usize, bool)),
+            ((), (Rc<RefCell<Vec<u128>>>, usize, bool)),
             (u32, u32)
         )| {
             let mut latencies_mut = latencies.borrow_mut();
@@ -1058,11 +1058,12 @@ mod tests {
         let builder = hydroflow_plus::FlowBuilder::new();
         let f = 1;
         let num_clients = 1;
+        let num_replicas = f+1;
         let num_clients_per_node = 1; // Change based on experiment between 1, 50, 100.
         let median_latency_window_size = 1000;
         let checkpoint_frequency = 1000; // Num log entries
         let i_am_leader_send_timeout = 5; // Sec
-        let i_am_leader_check_timeout = 10; // Sec
+        let i_am_leader_check_timeout = 1; // Sec
         let i_am_leader_check_timeout_delay_multiplier = 15;
 
         let (proposers, acceptors, clients, replicas) = super::paxos(
@@ -1105,7 +1106,7 @@ mod tests {
         )
         .with_cluster(
             &replicas,
-            (0..f+1)
+            (0..num_replicas)
                 .map(|_| TrybuildHost::new(localhost.clone()))
                 .collect::<Vec<_>>(),
         )

@@ -56,7 +56,7 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
         let extra_stmts = self.extra_stmts(env);
 
         HfCompiled {
-            hydroflow_ir: build_inner(ir_leaves_networked),
+            hydroflow_ir: build_inner(&ir_leaves_networked),
             extra_stmts,
             _phantom: PhantomData,
         }
@@ -115,7 +115,7 @@ impl<'a, D: Deploy<'a, CompileEnv = ()>> DeployFlow<'a, D> {
             })
             .collect();
 
-        let mut compiled = build_inner(ir_leaves_networked.clone());
+        let mut compiled = build_inner(&ir_leaves_networked);
         let mut extra_stmts = self.extra_stmts(&());
         let mut meta = D::Meta::default();
 

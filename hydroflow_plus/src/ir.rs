@@ -113,7 +113,7 @@ impl<'a> HfPlusLeaf<'a> {
         clusters: &HashMap<usize, D::Cluster>,
     ) -> HfPlusLeaf<'a> {
         self.transform_children(
-            |mut n, s| {
+            |n, s| {
                 n.compile_network::<D>(compile_env, s, nodes, clusters);
             },
             seen_tees,
@@ -162,7 +162,7 @@ impl<'a> HfPlusLeaf<'a> {
     }
 
     pub fn emit(
-        self,
+        &self,
         graph_builders: &mut BTreeMap<usize, FlatGraphBuilder>,
         built_tees: &mut HashMap<*const RefCell<HfPlusNode<'a>>, (syn::Ident, usize)>,
         next_stmt_id: &mut usize,
@@ -206,12 +206,12 @@ impl<'a> HfPlusLeaf<'a> {
                 };
 
                 assert_eq!(
-                    input_location_id, location_id,
+                    input_location_id, *location_id,
                     "cycle_sink location mismatch"
                 );
 
                 graph_builders
-                    .entry(location_id)
+                    .entry(*location_id)
                     .or_default()
                     .add_statement(parse_quote! {
                         #ident = #input_ident;
@@ -544,7 +544,9 @@ impl<'a> HfPlusNode<'a> {
         seen_tees: &mut SeenTees<'a>,
     ) {
         match self {
-            HfPlusNode::Placeholder => {},
+            HfPlusNode::Placeholder => {
+                panic!();
+            },
 
             HfPlusNode::Source {
                 source,
@@ -663,7 +665,7 @@ impl<'a> HfPlusNode<'a> {
     }
 
     pub fn emit(
-        self,
+        &self,
         graph_builders: &mut BTreeMap<usize, FlatGraphBuilder>,
         built_tees: &mut HashMap<*const RefCell<HfPlusNode<'a>>, (syn::Ident, usize)>,
         next_stmt_id: &mut usize,
@@ -749,11 +751,11 @@ impl<'a> HfPlusNode<'a> {
                 };
 
                 graph_builders
-                    .entry(location_id)
+                    .entry(*location_id)
                     .or_default()
                     .add_statement(source_stmt);
 
-                (source_ident, location_id)
+                (source_ident, *location_id)
             }
 
             HfPlusNode::CycleSource {
@@ -765,7 +767,7 @@ impl<'a> HfPlusNode<'a> {
                     LocationId::Cluster(id) => id,
                 };
 
-                (ident.clone(), location_id)
+                (ident.clone(), *location_id)
             }
 
             HfPlusNode::Tee { inner } => {
@@ -773,7 +775,7 @@ impl<'a> HfPlusNode<'a> {
                     ret.clone()
                 } else {
                     let (inner_ident, inner_location_id) = inner
-                        .replace(HfPlusNode::Placeholder)
+                        .borrow()
                         .emit(graph_builders, built_tees, next_stmt_id);
 
                     let tee_id = *next_stmt_id;
@@ -874,13 +876,13 @@ impl<'a> HfPlusNode<'a> {
                     unreachable!()
                 };
 
-                let (left_inner, left_was_persist) = if let HfPlusNode::Persist(left) = *left {
+                let (left_inner, left_was_persist) = if let HfPlusNode::Persist(left) = left.as_ref() {
                     (left, true)
                 } else {
                     (left, false)
                 };
 
-                let (right_inner, right_was_persist) = if let HfPlusNode::Persist(right) = *right {
+                let (right_inner, right_was_persist) = if let HfPlusNode::Persist(right) = right.as_ref() {
                     (right, true)
                 } else {
                     (right, false)
@@ -951,7 +953,7 @@ impl<'a> HfPlusNode<'a> {
                     unreachable!()
                 };
 
-                let (right, right_was_persist) = if let HfPlusNode::Persist(right) = *right {
+                let (right, right_was_persist) = if let HfPlusNode::Persist(right) = right.as_ref() {
                     (right, true)
                 } else {
                     (right, false)
@@ -1169,7 +1171,7 @@ impl<'a> HfPlusNode<'a> {
                     unreachable!()
                 };
 
-                let (input, input_was_persist) = if let HfPlusNode::Persist(input) = *input {
+                let (input, input_was_persist) = if let HfPlusNode::Persist(input) = input.as_ref() {
                     (input, true)
                 } else {
                     (input, false)
@@ -1210,7 +1212,7 @@ impl<'a> HfPlusNode<'a> {
                     unreachable!()
                 };
 
-                let (input, input_was_persist) = if let HfPlusNode::Persist(input) = *input {
+                let (input, input_was_persist) = if let HfPlusNode::Persist(input) = input.as_ref() {
                     (input, true)
                 } else {
                     (input, false)
@@ -1277,7 +1279,7 @@ impl<'a> HfPlusNode<'a> {
                     LocationId::Cluster(id) => id,
                 };
 
-                let receiver_builder = graph_builders.entry(to_id).or_default();
+                let receiver_builder = graph_builders.entry(*to_id).or_default();
                 let receiver_stream_id = *next_stmt_id;
                 *next_stmt_id += 1;
 
@@ -1294,7 +1296,7 @@ impl<'a> HfPlusNode<'a> {
                     });
                 }
 
-                (receiver_stream_ident, to_id)
+                (receiver_stream_ident, *to_id)
             }
         }
     }
