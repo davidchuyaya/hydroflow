@@ -1,11 +1,16 @@
 use hydroflow_plus::*;
 use stageleft::*;
+
 use hydroflow_plus::util::cli::HydroCLI;
 use hydroflow_plus_cli_integration::{CLIRuntime, HydroflowPlusMeta};
+// use hydroflow_plus_cli_integration::*;
+// use serde::{Serialize, Deserialize};
+// use std::collections::HashMap;
+// use std::time::{Duration, SystemTime};
 
-/*
+/* 
 
-if the variable start with p, that means current work is at the participant side. if start with c, at coordinator side.
+if the variable start with p, that means current work is at the participant side. if start with c, at coordinator side. 
 
 */
 
@@ -36,32 +41,32 @@ pub fn two_pc<'a, D: Deploy<'a, ClusterId = u32>>(
     /* collect votes from participant. */
 
     // aborted transactions.
-    let c_participant_voted_abort =
-        c_received_reply.clone().filter_map(q!(|(id, (t, reply))|
+    let c_participant_voted_abort = 
+    c_received_reply.clone().filter_map(q!(|(id, (t, reply))| 
     if reply == "abort"{
         Some((t, id))
     } else {
         None
     }
     ));
-
+    
     let p_receive_abort = c_participant_voted_abort.broadcast_bincode(&participants);
     p_receive_abort.clone().for_each(q!(|(t, id)| println!("{} vote abort for transaction {}", id, t)));
     let c_receive_ack = p_receive_abort.send_bincode(&coordinator);
     c_receive_ack.for_each(q!(|(id, (t, _))| println!("Coordinator receive participant {} abort for transaction {}", id, t)));
 
     // committed transactions
-    let c_participant_voted_commit =
-        c_received_reply.filter_map(q!(|(id, (t, reply))|
+    let c_participant_voted_commit = 
+    c_received_reply.filter_map(q!(|(id, (t, reply))| 
     if reply == "commit"{
         Some((t, id))
     } else {
         None
     }
-
-    ))// fold_keyed: 1 input stream of type (K, V1), 1 output stream of type (K, V2).
-            // The output will have one tuple for each distinct K, with an accumulated value of type V2.
-            .tick_batch().fold_keyed(q!(|| 0), q!(|old: &mut u32, _: u32| *old += 1)).filter_map(q!(|(t, count)| {
+    
+    ))// fold_keyed: 1 input stream of type (K, V1), 1 output stream of type (K, V2). 
+    // The output will have one tuple for each distinct K, with an accumulated value of type V2.
+    .tick_batch().fold_keyed(q!(|| 0), q!(|old: &mut u32, _: u32| *old += 1)).filter_map(q!(|(t, count)| {
         // here I set the participant to 3. If want more or less participant, fix line 26 of examples/broadcast.rs
         if count == 3 {
             Some(t)
@@ -72,12 +77,10 @@ pub fn two_pc<'a, D: Deploy<'a, ClusterId = u32>>(
     // broadcast commit transactions to participants.
     let p_receive_commit = c_participant_voted_commit.broadcast_bincode(&participants);
     p_receive_commit.clone().for_each(q!(|t| println!("commit for transaction {}", t)));
-
+    
     let c_receive_ack = p_receive_commit.send_bincode(&coordinator);
     c_receive_ack.for_each(q!(|(id, t)| println!("receive participant {} commit for transaction {}", id, t)));
 }
-
-
 
 #[stageleft::entry]
 pub fn two_pc_runtime<'a>(
@@ -94,13 +97,13 @@ pub fn two_pc_runtime<'a>(
 #[stageleft::runtime]
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::{cell::RefCell, rc::Rc};
 
     use hydro_deploy::{Deployment, HydroflowCrate};
     use hydroflow_plus_cli_integration::{
-        DeployClusterSpec, DeployCrateWrapper, DeployProcessSpec,
+        DeployClusterSpec, DeployProcessSpec,
     };
-    use stageleft::RuntimeData;
+    use super::ir::HfPlusGraphNode;
 
     #[tokio::test]
     async fn two_pc() {
@@ -142,13 +145,36 @@ mod tests {
                     })
                     .collect()
             })
-        );
-        let mut deployment = deployment.into_inner();
+    );
+    let built = builder.extract();
 
-        deployment.deploy().await.unwrap();
+    // // uncomment the following lines to see the output graph of two_pc, and the inverted graph.
+    // println!("Original Graph: [");
+    // for node in built.ir().clone() {
+    //     println!("{}", node);
+    //     println!(" ");
+    // }
+    // println!("]");      
+    // let mut seen_tees = Default::default();
+    // let source: Vec<HfPlusGraphNode> = built.ir().into_iter()
+    // .flat_map(|l| l.clone().create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
+    // .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
+    // .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
 
-        deployment.start().await.unwrap();
+    // println!("Result in Graph: [");
+    //     // Debug print the resulting graph
+    //     for node in &source {
+    //         println!("{}", node);
+    //         println!(" ");
+    //     }
+    // println!("]");
 
-        tokio::signal::ctrl_c().await.unwrap()
+    let mut deployment = deployment.into_inner();
+
+    deployment.deploy().await.unwrap();
+
+    deployment.start().await.unwrap();
+    
+    tokio::signal::ctrl_c().await.unwrap()
     }
 }
