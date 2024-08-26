@@ -1,5 +1,5 @@
+// cargo test -p hydroflow_plus_test pbft -- --nocapture
 use std::collections::HashSet;
-
 use hydroflow_plus::util::cli::HydroCLI;
 use hydroflow_plus::*;
 use hydroflow_plus_cli_integration::{CLIRuntime, HydroflowPlusMeta};
@@ -7,10 +7,24 @@ use serde::{Deserialize, Serialize};
 use stageleft::*;
 use std::time::{Duration, SystemTime};
 use stream::Windowed;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 // use hydroflow_plus_cli_integration::*;
 // use std::collections::HashSet;
-// use std::time::{Duration, SystemTime};
+
+// assert!(calculate_hash(&message1) != calculate_hash(&message2));
+fn calculate_hash<T: Hash>(t: &T) -> u64 {
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Hash)]
+struct Request {
+    operation: String,
+    timestamp: SystemTime,
+    client_id: u32,
+}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Hash)]
 struct ViewNumber {
@@ -18,9 +32,17 @@ struct ViewNumber {
     id: u32,
 }
 
-#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Clone, Debug)]
-struct SeqNumber {
-    sequence_number: u32,
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Hash)]
+struct ViewChange {
+    latest_view_number: u32,
+    current_view: u32,
+    id: u32,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug, Hash)]
+struct CheckPoint {
+    n : u32, // sequence number.
+
 }
 
 #[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Clone, Debug)]
@@ -70,7 +92,7 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
     client_spec: &impl ProcessSpec<'a, D>,
     replicas_spec: &impl ClusterSpec<'a, D>,
     f: RuntimeData<&'a u32>,
-    time_duration: RuntimeData<&'a Duration>, 
+    // time_duration: RuntimeData<&'a Duration>,
 ) -> (D::Process, D::Cluster) {
     // Assume single client.
     let client = flow.process(client_spec);
@@ -80,43 +102,43 @@ pub fn pbft<'a, D: Deploy<'a, ClusterId = u32>>(
     let r_id = replicas.self_id();
 
 
-    /* very simple primary election, assume primary has the largest id in cluster */
-    let (have_primary_complete_cycle, have_primary) = flow.cycle(&replicas);
-    // let (is_primary_complete_cycle, is_primary) = flow.cycle(&replicas);
-
-    // broadcast view number to all replicas assume view number is the id of the replica.
-    let r_view_number = flow
-    .source_iter(&replicas, q!([r_id]))
-    .broadcast_bincode(&replicas);
-
-    // replica receive the id from replicas, calculate the largest id in cluster, also count how many it received.
-    let r_largest_id = r_view_number
-    .all_ticks()
-    .sample_every(q!(*time_duration))
-    .fold(q!(|| (0, 0, 0)), q!(|(count, largest_view, pid), (new_pid, view)| {
-        *count += 1;
-        if view > *largest_view {
-            *largest_view = view;
-            *pid = new_pid;
-        }
-    }));
-
-    // replica make conclusion if it received all ids from all replicas.
-    let r_primary_id = r_largest_id
-    .filter_map(q!(move |(count, view, pid)| {
-        if count == 4 {
-            Some(ViewNumber{view_number: view, id: pid})
-        } else {
-            None
-        }
-    }));
-
-    have_primary_complete_cycle.complete(r_primary_id);    
-    // let is_primary = have_primary
-    // .clone()
-    // .filter(q!(move |view: &ViewNumber| view.id == r_id))
-    // .all_ticks();
-    /* End simple primary election */
+    // /* very simple primary election, assume primary has the largest id in cluster */
+    // let (have_primary_complete_cycle, have_primary) = flow.cycle(&replicas);
+    // // let (is_primary_complete_cycle, is_primary) = flow.cycle(&replicas);
+    //
+    // // broadcast view number to all replicas assume view number is the id of the replica.
+    // let r_view_number = flow
+    // .source_iter(&replicas, q!([r_id]))
+    // .broadcast_bincode(&replicas);
+    //
+    // // replica receive the id from replicas, calculate the largest id in cluster, also count how many it received.
+    // let r_largest_id = r_view_number
+    // .all_ticks()
+    // .sample_every(q!(*time_duration))
+    // .fold(q!(|| (0, 0, 0)), q!(|(count, largest_view, pid), (new_pid, view)| {
+    //     *count += 1;
+    //     if view > *largest_view {
+    //         *largest_view = view;
+    //         *pid = new_pid;
+    //     }
+    // }));
+    //
+    // // replica make conclusion if it received all ids from all replicas.
+    // let r_primary_id = r_largest_id
+    // .filter_map(q!(move |(count, view, pid)| {
+    //     if count == 4 {
+    //         Some(ViewNumber{view_number: view, id: pid})
+    //     } else {
+    //         None
+    //     }
+    // }));
+    //
+    // have_primary_complete_cycle.complete(r_primary_id);
+    // // let is_primary = have_primary
+    // // .clone()
+    // // .filter(q!(move |view: &ViewNumber| view.id == r_id))
+    // // .all_ticks();
+    // /* End simple primary election */
 
 
     
@@ -369,9 +391,10 @@ pub fn pbft_runtime<'a>(
     flow: FlowBuilder<'a, CLIRuntime>,
     cli: RuntimeData<&'a HydroCLI<HydroflowPlusMeta>>,
     f: RuntimeData<&'a u32>,
-    time_duration: RuntimeData<&'a Duration>,
+    // time_duration: RuntimeData<&'a Duration>,
 ) -> impl Quoted<'a, Hydroflow<'a>> {
-    let _ = pbft(&flow, &cli, &cli, f, time_duration);
+    let _ = pbft(&flow, &cli, &cli, f);
+    // let _ = pbft(&flow, &cli, &cli, f, time_duration);
     flow.extract()
         .optimize_default()
         .with_dynamic_id(q!(cli.meta.subgraph_id))
@@ -421,7 +444,7 @@ mod tests {
                     .collect()
             }),
             RuntimeData::new("Fake"),
-            RuntimeData::new("Fake"),
+            // RuntimeData::new("Fake"),
         );
 
         let mut deployment = deployment.into_inner();

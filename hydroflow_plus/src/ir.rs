@@ -157,6 +157,10 @@ impl HfPlusLeaf {
 
     }
 
+    pub fn is_output_set_monotonic(self) -> bool {
+        return false;
+    }
+
     pub fn transform_children(
         self,
         mut transform: impl FnMut(HfPlusNode, &mut SeenTees) -> HfPlusNode,

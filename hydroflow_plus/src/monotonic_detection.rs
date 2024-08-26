@@ -151,12 +151,12 @@ mod tests {
         let (cycle_complete, cycle) = flow.cycle(&process);
         let source = flow.source_iter(&process, q!(0..2));
         cycle_complete.complete(source);
-        let ret = cycle.for_each(q!(|n| println!("{}", n)));
+        cycle.for_each(q!(|n| println!("{}", n)));
         let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
 
         let built = flow.extract();
         println!("checking each node is monotonic or not: ");
-        println!("Expected output: NO");
+        println!("Expected output: Yes after persist");
         for node in built.ir.clone() {
             node.apply_function_to_all_nodes(
                 &monotonic_detection_called_fn_leaf,

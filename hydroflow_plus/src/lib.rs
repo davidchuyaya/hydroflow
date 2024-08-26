@@ -19,7 +19,6 @@ pub mod runtime_support {
 }
 
 pub mod stream;
-pub mod monotonic_detection;
 pub use stream::Stream;
 
 pub mod location;
@@ -40,6 +39,7 @@ pub mod persist_pullup;
 pub mod profiler;
 
 pub mod properties;
+mod monotonic_detection;
 
 #[derive(Clone)]
 pub struct RuntimeContext<'a> {

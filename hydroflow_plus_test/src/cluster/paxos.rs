@@ -295,25 +295,25 @@ fn p_p2b<'a, D: Deploy<'a, ClusterId = u32>>(
                     }
                 }
             )),
-            q!(|accum: &mut (usize, P2b), (sender, p2b): (u32, P2b)| {
+            q!(|accum: &mut (usize, P2b), (_sender, p2b): (u32, P2b)| {
                 accum.0 += 1;
                 accum.1 = p2b;
             }),
         );
     let p_p2b_quorum_reached = p_count_matching_p2bs
         .clone()
-        .filter(q!(|(slot, (count, p2b)): &(i32, (usize, P2b))| *count > *f));
+        .filter(q!(|(_slot, (count, _p2b)): &(i32, (usize, P2b))| *count > *f));
     let p_to_replicas = p_p2b_quorum_reached
         .clone()
         .anti_join(p_broadcasted_p2b_slots) // Only tell the replicas about committed values once
-        .map(q!(|(slot, (count, p2b)): (i32, (usize, P2b))| ReplicaPayload { seq: p2b.slot, key: p2b.value.key, value: p2b.value.value }))
+        .map(q!(|(_slot, (_count, p2b)): (i32, (usize, P2b))| ReplicaPayload { seq: p2b.slot, key: p2b.value.key, value: p2b.value.value }))
         .broadcast_bincode_interleaved(replicas);
 
     let p_p2b_all_commit_slots =
         p_count_matching_p2bs
             .clone()
             .filter_map(q!(
-                |(slot, (count, p2b)): (i32, (usize, P2b))| if count == 2 * *f + 1 {
+                |(slot, (count, _p2b)): (i32, (usize, P2b))| if count == 2 * *f + 1 {
                     Some(slot)
                 } else {
                     None
@@ -322,7 +322,7 @@ fn p_p2b<'a, D: Deploy<'a, ClusterId = u32>>(
     // p_p2b_all_commit_slots.clone().for_each(q!(|slot: i32| println!("Proposer slot all received: {:?}", slot)));
     let p_broadcasted_p2b_slots_new = p_p2b_quorum_reached
         .clone()
-        .map(q!(|(slot, (count, p2b)): (i32, (usize, P2b))| slot))
+        .map(q!(|(slot, (_count, _p2b)): (i32, (usize, P2b))| slot))
         .filter_not_in(p_p2b_all_commit_slots.clone())
         .defer_tick();
     // p_broadcasted_p2b_slots_new.clone().for_each(q!(|slot: i32| println!("Proposer slot broadcasted: {:?}", slot)));
@@ -331,7 +331,7 @@ fn p_p2b<'a, D: Deploy<'a, ClusterId = u32>>(
         .clone()
         .map(q!(|(sender, p2b): (u32, P2b)| (p2b.slot, (sender, p2b))))
         .anti_join(p_p2b_all_commit_slots.clone())
-        .map(q!(|(slot, (sender, p2b)): (i32, (u32, P2b))| (sender, p2b)))
+        .map(q!(|(_slot, (sender, p2b)): (i32, (u32, P2b))| (sender, p2b)))
         .defer_tick();
     // p_persisted_p2bs_new.clone().for_each(q!(|(sender, p2b): (u32, P2b)| println!("Proposer persisting p2b: {:?}", p2b)));
     p_persisted_p2bs_complete_cycle.complete(p_persisted_p2bs_new);
@@ -427,7 +427,7 @@ fn p_p1b<'a, D: Deploy<'a, ClusterId = u32>>(
         .clone()
         .all_ticks()
         .zip_with_singleton(p_ballot_num.clone())
-        .filter(q!(move |((sender, p1b), ballot_num): &(
+        .filter(q!(move |((_sender, p1b), ballot_num): &(
             (u32, P1b),
             u32
         )| p1b.ballot
@@ -437,7 +437,7 @@ fn p_p1b<'a, D: Deploy<'a, ClusterId = u32>>(
             }));
     let p_received_quorum_of_p1bs = p_relevant_p1bs
         .clone()
-        .map(q!(|((sender, p1b), ballot_num): ((u32, P1b), u32)| sender))
+        .map(q!(|((sender, _p1b), _ballot_num): ((u32, P1b), u32)| sender))
         .unique()
         .count()
         .filter_map(q!(|num_received: usize| if num_received > *f {
@@ -488,7 +488,7 @@ fn p_p1b<'a, D: Deploy<'a, ClusterId = u32>>(
     let p_max_slot = p_p1b_highest_entries_and_count.clone().fold(
         q!(|| -1),
         q!(
-            |max_slot: &mut i32, (slot, (count, entry)): (i32, (u32, LogValue))| {
+            |max_slot: &mut i32, (slot, (_count, _entry)): (i32, (u32, LogValue))| {
                 if slot > *max_slot {
                     *max_slot = slot;
                 }
@@ -597,7 +597,7 @@ fn replica<'a, D: Deploy<'a, ClusterId = u32>>(
         }));
     // Update the highest seq for the next tick
     let r_new_highest_seq = r_kv_store
-        .map(q!(|(kv_store, highest_seq): (
+        .map(q!(|(_kv_store, highest_seq): (
             HashMap::<u32, String>,
             i32
         )| highest_seq))
@@ -701,7 +701,7 @@ fn client<'a, D: Deploy<'a, ClusterId = u32>>(
 
     let c_latencies = c_timers
         .join(c_updated_timers)
-        .map(q!(|(virtual_id, (prev_time, curr_time)): (
+        .map(q!(|(_virtual_id, (prev_time, curr_time)): (
             usize,
             (SystemTime, SystemTime)
         )| Some(
