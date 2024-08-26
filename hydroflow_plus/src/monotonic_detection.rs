@@ -1,207 +1,173 @@
+use std::{collections::HashMap, rc::Rc};
 use crate::ir::*;
+use syn::Ident;
 
-struct Edge {
-    source: HfPlusNode,
-    target: HfPlusNode, 
-    is_monotonic: bool,
+fn monotonic_detection_called_fn_leaf(
+    node: HfPlusLeaf,
+    cycle_sink_ident_map: &mut HashMap<Ident, bool>,
+) {
+        
+                println!(
+                    "node: {:?}, \nmonotonic: {}",
+                    node,
+                    node.clone().is_my_output_set_monotonic(cycle_sink_ident_map)
+                );
 }
 
-
-
-fn monotonic_detection_node(node: HfPlusNode, seen_tees: &mut SeenTees) -> HfPlusNode {
-    match node.transform_children(monotonic_detection_node, seen_tees) {
-        HfPlusNode::Source{
-            source: HfPlusSource,
-            location_id: usize,
-        } => {
-            println!("I'm source, not monotonic. All op except Persist behind me are not monotonic.");
-            HfPlusNode::Source {
-                source: HfPlusSource.clone(),
-                location_id: usize,
-            }
-        },
-        HfPlusNode::Persist(inner) => {
-            // Create a new HfPlusNode::Persist with the transformed input
-            println!("hey, it is persist");
-            HfPlusNode::Persist(inner)
-        },
-        o => {
-            println!("current op: {:?}", o);
-            o
-        },
-    }
+fn monotonic_detection_called_fn_node(
+    node: HfPlusNode,
+    cycle_sink_ident_map: &mut HashMap<Ident, bool>,
+) {
+        
+    println!(
+        "node: {:?}, \nmonotonic: {}",
+        node,
+        node.clone().is_my_output_set_monotonic(cycle_sink_ident_map)
+    );
 }
-
-// pub fn monotonic_detection(ir: Vec<HfPlusLeaf>) -> Vec<HfPlusGraphNode> {
-//     let mut seen_tees = Default::default();
-//     ir.into_iter()
-//         .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
-//         .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
-//         .collect()
-// }
 
 
 #[cfg(test)]
 mod tests {
+    use hydroflow::lattices::cc_traits::MapInsert;
     use stageleft::*;
-    use std::rc::Rc;
-    use crate::MultiGraph;
-
-    use super::HfPlusGraphNode;
+    use crate::{MultiGraph, __staged::cycle};
+    use super::*;
 
     #[test]
-    fn invert_graph_union_and_source_test() {
+    fn is_my_output_set_monotonic_source_union_test() {
         let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
         let process = flow.process(&());
 
         let source1 = flow.source_iter(&process, q!(0..2));
         let source2 = flow.source_iter(&process, q!(3..4)).union(source1).for_each(q!(|n| println!("{}", n)));
-
         let built = flow.extract();
-        println!("Original Graph: [");
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
+
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: NO");
         for node in built.ir.clone() {
-            println!("{}", node);
-            println!(" ");
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");
-        // insta::assert_debug_snapshot!(built.ir());
-        let mut seen_tees = Default::default();
-        let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
-        .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
-        .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
-        .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
-        println!("Result in Graph: [");
-        // Debug print the resulting graph
-        for node in &source {
-            println!("{}", node);
-            println!(" ");
-        }
-        println!("]");
     }
 
     #[test]
-    fn invert_graph_source_and_map_test() {
+    fn is_my_output_set_monotonic_source_and_map_test() {
         let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
         let process = flow.process(&());
-
+        // source -> map -> for_each
         let source = flow.source_iter(&process, q!(0..2));
         let ret = source.map(q!(|i| i + 1)).for_each(q!(|n| println!("{}", n)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
 
         let built = flow.extract();
-        println!("Original Graph: [");
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: NO");
         for node in built.ir.clone() {
-            println!("{}", node);
-            println!(" ");
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");
-        let mut seen_tees = Default::default();
-        let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
-        .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
-        .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
-        .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
-        println!("Result in Graph: [");
-        // Debug print the resulting graph
-        for node in &source {
-            println!("{}", node);
-            println!(" ");
-        }
-        println!("]");
     }
 
     #[test]
-    fn invert_graph_source_and_flatmap_test() {
+    fn is_my_output_set_monotonic_source_and_persist_test() {
         let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
         let process = flow.process(&());
-
-        let source = flow.source_iter(&process, q!(vec![0..2]));
-        let ret = source.flat_map(q!(|i| i)).for_each(q!(|n| println!("{}", n)));
+        // source -> all_ticks -> for_each
+        let source = flow.source_iter(&process, q!(0..2));
+        let ret = source.all_ticks().for_each(q!(|n| println!("{}", n)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
 
         let built = flow.extract();
-        println!("Original Graph: [");
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: Yes after Persist");
         for node in built.ir.clone() {
-            println!("{}", node);
-            println!(" ");
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");
-        let mut seen_tees = Default::default();
-        let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
-        .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
-        .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
-        .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
-    
-        // Debug print the resulting graph
-        println!("Result in Graph: [");
-        // Debug print the resulting graph
-        for node in &source {
-            println!("{}", node);
-            println!(" ");
-        }
-        println!("]");
     }
+    
 
     #[test]
-    fn invert_graph_source_and_clone_test() {
+    fn is_my_output_set_monotonic_source_and_clone_test() {
         let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
         let process = flow.process(&());
 
         let source = flow.source_iter(&process, q!(0..2));
         let ret = source.clone().for_each(q!(|n| println!("{}", n)));
         let ret2 = source.for_each(q!(|n| println!("{}", n)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
 
         let built = flow.extract();
-        println!("Original Graph: [");
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: Yes after Persist");
         for node in built.ir.clone() {
-            println!("{}", node);
-            println!(" ");
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");
-        let mut seen_tees = Default::default();
-        let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
-        .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
-        .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
-        .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
-    
-        println!("Result in Graph: [");
-        // Debug print the resulting graph
-        for node in &source {
-            println!("{}", node);
-            println!(" ");
-        }
-        println!("]");
     }
 
     #[test]
-    fn invert_graph_source_and_persist_test() {
+    fn is_my_output_set_monotonic_source_persist_and_flatmap_test() {
         let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
         let process = flow.process(&());
 
-        let source = flow.source_iter(&process, q!(0..2));
-        let ret = source.all_ticks().for_each(q!(|n| println!("{}", n)));
+        let source = flow.source_iter(&process, q!(vec![0..2]));
+        let persisted = source.all_ticks();
+        persisted.flat_map(q!(|i| i)).for_each(q!(|n| println!("{}", n)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
 
         let built = flow.extract();
-        println!("Original Graph: [");
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: Yes after Persist");
         for node in built.ir.clone() {
-            println!("{}", node);
-            println!(" ");
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");
-        let mut seen_tees = Default::default();
-        let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
-        .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
-        .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
-        .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
+    }
+
     
-        println!("Result in Graph: [");
-        // Debug print the resulting graph
-        for node in &source {
-            println!("{}", node);
-            println!(" ");
+    #[test]
+    fn is_my_output_set_monotonic_source_and_cycle_test() {
+        let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
+        let process = flow.process(&());
+
+        let (cycle_complete, cycle) = flow.cycle(&process);
+        let source = flow.source_iter(&process, q!(0..2));
+        cycle_complete.complete(source);
+        let ret = cycle.for_each(q!(|n| println!("{}", n)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
+
+        let built = flow.extract();
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: NO");
+        for node in built.ir.clone() {
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");
     }
 
     #[test]
-    fn invert_graph_source_and_cycle_test() {
+    fn is_my_output_set_monotonic_source_and_persist_cycle_test() {
         let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
         let process = flow.process(&());
 
@@ -209,58 +175,88 @@ mod tests {
         let source = flow.source_iter(&process, q!(0..2));
         cycle_complete.complete(source);
         let ret = cycle.all_ticks().for_each(q!(|n| println!("{}", n)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
 
         let built = flow.extract();
-        println!("Original Graph: [");
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: Yes after persist");
         for node in built.ir.clone() {
-            println!("{}", node);
-            println!(" ");
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");        
-        let mut seen_tees = Default::default();
-        let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
-        .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
-        .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
-        .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
-    
-        println!("Result in Graph: [");
-        // Debug print the resulting graph
-        for node in &source {
-            println!("{}", node);
-            println!(" ");
-        }
-        println!("]");
     }
 
     #[test]
-    fn invert_graph_source_filter_fold_test() {
+    fn is_my_output_set_monotonic_source_filter_fold_test() {
         let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
         let process = flow.process(&());
         let source = flow.source_iter(&process, q!(0..2));
         let filtered = source.filter(q!(|i| *i < 30));
         let folded = filtered.fold(q!(|| 0), q!(|cur, incoming| *cur += 1));
         folded.for_each(q!(|i| println!("{}",i)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
 
         let built = flow.extract();
-        println!("Original Graph: [");
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: NO");
         for node in built.ir.clone() {
-            println!("{}", node);
-            println!(" ");
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");        
-        let mut seen_tees = Default::default();
-        let source: Vec<HfPlusGraphNode> = built.ir.into_iter()
-        .flat_map(|l| l.create_inverted_graph(&mut seen_tees)) // Use `flat_map` to flatten the results
-        .map(|rc_node| Rc::try_unwrap(rc_node).ok().unwrap().into_inner()) // Unwrap the Rc<RefCell<_>> to get the inner HfPlusGraphNode
-        .collect(); // Now the compiler knows to collect into Vec<HfPlusGraphNode>
-    
-        println!("Result in Graph: [");
-        // Debug print the resulting graph
-        for node in &source {
-            println!("{}", node);
-            println!(" ");
+    }
+
+    #[test]
+    fn is_my_output_set_monotonic_source_filter_persist_map_filter_fold_test() {
+        let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
+        let process = flow.process(&());
+        let source = flow.source_iter(&process, q!(0..15));
+        let filtered = source.filter(q!(|i| *i < 30));
+        let persisted = filtered.all_ticks();
+        let mapped = persisted.map(q!(|x| x+1));
+        let filtered_2 = mapped.filter(q!(|x| *x < 10));
+        let folded = filtered_2.fold(q!(|| 0), q!(|cur, incoming| *cur += 1));
+        folded.for_each(q!(|i| println!("{}",i)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
+
+        let built = flow.extract();
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: Yes after persist, No after fold");
+        for node in built.ir.clone() {
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
         }
-        println!("]");
+    }
+
+    #[test]
+    fn is_my_output_set_monotonic_source_persist_cycle_test() {
+        let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
+        let process = flow.process(&());
+        let source: crate::Stream<i32, crate::stream::Windowed, crate::location::MultiNode> = flow.source_iter(&process, q!(0..15));
+        let persisted = source.all_ticks();
+        let (cycle_complte, cycle) = flow.cycle(&process);
+        cycle_complte.complete(persisted);
+        cycle.for_each(q!(|i| println!("{}",i)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
+
+        let built = flow.extract();
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: Yes after persist");
+        for node in built.ir.clone() {
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
+        }
     }
 
 

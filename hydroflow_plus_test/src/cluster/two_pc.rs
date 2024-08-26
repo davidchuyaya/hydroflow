@@ -103,7 +103,6 @@ mod tests {
     use hydroflow_plus_cli_integration::{
         DeployClusterSpec, DeployProcessSpec,
     };
-    use super::ir::HfPlusGraphNode;
 
     #[tokio::test]
     async fn two_pc() {

@@ -9,7 +9,7 @@ use hydroflow_lang::graph::FlatGraphBuilder;
 use hydroflow_lang::parse::Pipeline;
 use proc_macro2::{Span, TokenStream};
 use quote::ToTokens;
-use syn::parse_quote;
+use syn::{parse_quote, Ident};
 
 #[derive(Clone)]
 pub struct DebugExpr(pub Box<syn::Expr>);
@@ -58,20 +58,6 @@ pub enum HfPlusSource {
     Spin(),
 }
 
-// a enum class that represent all types of node in the graph. for create inverted graph purpose.
-#[derive(Clone, Debug)]
-pub enum HfPlusGraphNode {
-    HfPlusLeaf(HfPlusLeaf),
-    HfPlusNode {
-        node: HfPlusNode,
-        next: Vec<Rc<RefCell<HfPlusGraphNode>>>,
-    },
-    HfPlusSource {
-        node: HfPlusNode,
-        next: Vec<Rc<RefCell<HfPlusGraphNode>>>,
-    },
-}
-
 /// An leaf in a Hydroflow+ graph, which is an pipeline that doesn't emit
 /// any downstream values. Traversals over the dataflow graph and
 /// generating Hydroflow IR start from leaves.
@@ -93,44 +79,82 @@ pub enum HfPlusLeaf {
 }
 
 impl HfPlusLeaf {
-    
-    // create a inverted graph, with each node a HfPlusGraphNode, return the SourceNode
-    pub fn create_inverted_graph(
+
+    pub fn apply_function_to_all_nodes<F_leaf, F_node, T>(
         self,
-        seen_tees: &mut SeenTees,
-    ) -> Vec<Rc<RefCell<HfPlusGraphNode>>> {
+        func_leaf: &F_leaf,
+        func_node: &F_node,
+        func_mut_parameter: &mut T, 
+    )
+    where
+        F_leaf: Fn(HfPlusLeaf, &mut T),
+        F_node: Fn(HfPlusNode, &mut T),
+    {      
+    // Applies a primary function to each node in the graph, optionally using additional function parameters.
+    //
+    // This function iterates over each node in the graph, applying the provided `func` to each node.
+    // The function can accept up to two additional optional mutable parameters.
+    //
+    // # Parameters
+    //
+    // - `func`: A function or closure of type `F` that takes an argument of type `Either<HfPlusNode, HfPlusLeaf>`.
+    //   This function is applied to each node in the graph. Note that the operations performed by `func` will not
+    //   have a direct effect on the structure of the graph itself; it is a read-only operation on the nodes.
+    // - `func_mut_parameter1`: An optional mutable reference parameter of type `T1`. If provided, this parameter is passed
+    //   into `func` and can be used to modify external state or provide mutable context for the operation.
+    // - `func_mut_parameter2`: An optional mutable reference parameter of type `T2`. Similar to `func_mut_parameter1`, this
+    //   parameter allows for mutable state to be passed into `func`.
+    //
+    // # Type Parameters
+    //
+    // - `F`: The type of the primary function or closure to be applied to each node. This function must accept a parameter
+    //   of type `Either<HfPlusNode, HfPlusLeaf>`, and can optionally use up to four additional parameters if they are provided.
+    // - `T1`: The type of the first optional mutable parameter that can be passed to `func`. This parameter allows the function
+    //   to modify state or interact with mutable data.
+    // - `T2`: The type of the second optional mutable parameter that can be passed to `func`, providing further mutable context.
+    //
+    // # Notes
+    //
+    // - This method does not alter the structure of the graph; it is intended for operations that read or process nodes without modifying their connectivity or relationships.
+    
+    // apply the function to self.
+    func_leaf(
+        self.clone(),
+        func_mut_parameter,
+    );
+
+    // Match on self to apply recursively to inputs
+    match self {
+        HfPlusLeaf::ForEach { input, .. }
+        | HfPlusLeaf::DestSink { input, .. }
+        | HfPlusLeaf::CycleSink { input, .. } => {
+            input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter);
+        }
+        // Add more cases as needed depending on the variant of HfPlusLeaf and their structure
+    }
+}
+
+    pub fn is_my_output_set_monotonic(self, cycle_sink_ident_map: &mut HashMap<Ident, bool>) -> bool {
         match self {
-            HfPlusLeaf::ForEach { f, input } => {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusLeaf(
-                    HfPlusLeaf::ForEach {
-                        f,
-                        input: input.clone(),
-                    },
-                )));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
+            // for each depends on the input
+            HfPlusLeaf::ForEach { f, input } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            // not sure about destSink, I think it depends on the input of the destSink?
             HfPlusLeaf::DestSink { sink, input } => 
             {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusLeaf(HfPlusLeaf::DestSink {
-                sink,
-                input: input.clone(),
-            })));
-                input.create_inverted_graph( vec![cur], seen_tees)
+                input.is_my_output_set_monotonic(cycle_sink_ident_map)
             },
+            // depends on input of the cycle, example: all_ticks -> cycleSink 
             HfPlusLeaf::CycleSink {
                 ident,
                 location_id,
                 input,
-            } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusLeaf( HfPlusLeaf::CycleSink {
-                ident,
-                location_id,
-                input: input.clone(),
-            })));
-                input.create_inverted_graph( vec![cur], seen_tees)
+            } => {
+                let result = input.is_my_output_set_monotonic(cycle_sink_ident_map); // first check if it is monotonic
+                cycle_sink_ident_map.insert(ident, result); // then 
+                result
             },
         }
+
     }
 
     pub fn transform_children(
@@ -212,8 +236,9 @@ impl HfPlusLeaf {
             }
         }
     }
-}
 
+
+}
 /// An intermediate node in a Hydroflow+ graph, which consumes data
 /// from upstream nodes and emits data to downstream nodes.
 #[derive(Clone, Debug)]
@@ -305,277 +330,167 @@ pub enum HfPlusNode {
 pub type SeenTees = HashMap<*const RefCell<HfPlusNode>, Rc<RefCell<HfPlusNode>>>;
 
 impl HfPlusNode {
-
-    // return a Vec here?
-    pub fn create_inverted_graph(
+    
+    pub fn apply_function_to_all_nodes<F_leaf, F_node, T>(
         self,
-        prev: Vec<Rc<RefCell<HfPlusGraphNode>>>,
-        seen_tees: &mut SeenTees,
-    ) -> Vec<Rc<RefCell<HfPlusGraphNode>>> {
-        match self {
-            // if it is source, return it self.
-            HfPlusNode::Placeholder => 
-            {
-                vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {node: HfPlusNode::Placeholder, next: prev}))]
-            }
+        func_leaf: &F_leaf,
+        func_node: &F_node,
+        func_mut_parameter: &mut T, 
+    )
+    where
+        F_leaf: Fn(HfPlusLeaf, &mut T),
+        F_node: Fn(HfPlusNode, &mut T),
+    { 
+    // Applies a primary function to each node in the graph, optionally using additional function parameters.
+    //
+    // This function iterates over each node in the graph, applying the provided `func` to each node.
+    // The function can accept up to two additional optional mutable parameters.
+    //
+    // # Parameters
+    //
+    // - `func`: A function or closure of type `F` that takes an argument of type `Either<HfPlusNode, HfPlusLeaf>`.
+    //   This function is applied to each node in the graph. Note that the operations performed by `func` will not
+    //   have a direct effect on the structure of the graph itself; it is a read-only operation on the nodes.
+    // - `func_mut_parameter1`: An optional mutable reference parameter of type `T1`. If provided, this parameter is passed
+    //   into `func` and can be used to modify external state or provide mutable context for the operation.
+    // - `func_mut_parameter2`: An optional mutable reference parameter of type `T2`. Similar to `func_mut_parameter1`, this
+    //   parameter allows for mutable state to be passed into `func`.
+    //
+    // # Type Parameters
+    //
+    // - `F`: The type of the primary function or closure to be applied to each node. This function must accept a parameter
+    //   of type `Either<HfPlusNode, HfPlusLeaf>`, and can optionally use up to four additional parameters if they are provided.
+    // - `T1`: The type of the first optional mutable parameter that can be passed to `func`. This parameter allows the function
+    //   to modify state or interact with mutable data.
+    // - `T2`: The type of the second optional mutable parameter that can be passed to `func`, providing further mutable context.
+    //
+    // # Notes
+    //
+    // - This method does not alter the structure of the graph; it is intended for operations that read or process nodes without modifying their connectivity or relationships.
+    
+    // apply the function to self.
+    func_node(self.clone(), func_mut_parameter);
+    match self {
+        HfPlusNode::Placeholder => (), 
+        HfPlusNode::Source {
+            source: _,
+            location_id: _,
+        } => (),
+        HfPlusNode::CycleSource { ident: _, location_id : _} => (),
+        HfPlusNode::Tee { inner } => inner.borrow().clone().apply_function_to_all_nodes( func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Persist(inner) => inner.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Delta(inner) => inner.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Union(left, right) => 
+        {
+            left.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter);
+            right.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter)
+        },
+        // HfPlusNode::CrossProduct(left, right) => 
+        // {
+        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
+        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
+        // },
+        // HfPlusNode::ZipWithSingleton(left, right) => 
+        // {
+        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
+        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
+        // },
+        // HfPlusNode::Join(left, right) => 
+        // {
+        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
+        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
+        // },
+        // HfPlusNode::Difference(left, right) => 
+        // {
+        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
+        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
+        // },
+        // HfPlusNode::AntiJoin(left, right) => 
+        // {
+        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
+        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
+        // },
+        HfPlusNode::Map { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::FlatMap { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Filter { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::FilterMap { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Sort(input) => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::DeferTick(input) => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::GateSignal(input, signal) => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Enumerate(input) => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Inspect { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Unique(input) => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Fold { init: _, acc: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::FoldKeyed { init: _, acc: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Reduce { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::ReduceKeyed { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        HfPlusNode::Network {
+            to_location: _,
+            serialize_pipeline: _,
+            sink_expr: _,
+            source_expr: _,
+            deserialize_pipeline: _,
+            input,
+        } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
+        o => (),
+    }
+    }
 
+
+    pub fn is_my_output_set_monotonic(self, cycle_sink_ident_map: &mut HashMap<Ident, bool>) -> bool {
+        match self {
+            // what should i return if it is a placeholder? false
+            HfPlusNode::Placeholder => false,
+            // return false since it only iterate once
             HfPlusNode::Source {
                 source,
                 location_id,
-            } => vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                node: HfPlusNode::Source {
-                source,
-                location_id,
-            },
-                next: prev,
-            }))],
-
-            HfPlusNode::CycleSource { ident, location_id } => vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                node: HfPlusNode::CycleSource { ident, location_id },
-                next: prev,
-            }))],
-
-            HfPlusNode::Tee { inner } => {
-                if let Some(already_seen) =
-                    seen_tees.get(&(inner.as_ref() as *const RefCell<HfPlusNode>))
-                {
-                    vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                        node: HfPlusNode::Tee {
-                            inner: already_seen.clone(),
-                        },
-                        next: prev,
-                    }))]
+            } => false,
+            // TODO: currently return false. fix later
+            HfPlusNode::CycleSource { ident, location_id } => 
+            {
+                if cycle_sink_ident_map.contains_key(&ident) {
+                    cycle_sink_ident_map[&ident]
                 } else {
-                    let transformed_cell = Rc::new(RefCell::new(HfPlusNode::Placeholder));
-                    seen_tees.insert(
-                        inner.as_ref() as *const RefCell<HfPlusNode>,
-                        transformed_cell.clone(),
-                    );
-                    let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                        node: HfPlusNode::Tee { inner: inner.clone() },
-                        next: prev,
-                    }));
-
-                    // Recursively create the inverted graph for the inner node
-                    let mut result = inner.borrow().clone().create_inverted_graph(vec![cur.clone()], seen_tees);
-                    // Replace the placeholder with the actual processed node
-                     
-                    result
-
+                    panic!("cycle source has not decided!")
                 }
             },
-
-            HfPlusNode::Persist(inner) => {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Persist(inner.clone()),
-                    next: prev,
-                }));
-                inner.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::Delta(inner) => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Delta(inner.clone()),
-                    next: prev,
-                }));
-                inner.create_inverted_graph(vec![cur], seen_tees)
-            },
-            
-            HfPlusNode::Union(left, right) => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Union(
-                        left.clone(),
-                        right.clone(),
-                    ),
-                    next: prev
-                }));
-                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
-                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
-                source_left
-            },
-
-            HfPlusNode::CrossProduct(left, right) =>
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                    node: HfPlusNode::CrossProduct(left.clone(), right.clone()),
-                    next: prev
-                }));
-                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
-                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
-                source_left
-            },
-
-            HfPlusNode::ZipWithSingleton(left, right) =>
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                    node: HfPlusNode::ZipWithSingleton(left.clone(), right.clone()),
-                    next: prev
-                }));
-                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
-                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
-                source_left
-            },
-
-            HfPlusNode::Join(left, right) => {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                    node: HfPlusNode::Join(left.clone(), right.clone()),
-                    next: prev
-                }));
-                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
-                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
-                source_left
-            },
-
-            HfPlusNode::Difference(left, right) => {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                    node: HfPlusNode::Difference(left.clone(), right.clone()),
-                    next: prev
-                }));
-                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
-                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
-                source_left
-            },
-
-            HfPlusNode::AntiJoin(left, right) => {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                    node: HfPlusNode::AntiJoin(left.clone(), right.clone()),
-                    next: prev
-                }));
-                let mut source_left = left.create_inverted_graph(vec![cur.clone()], seen_tees);
-                source_left.extend(right.create_inverted_graph(vec![cur], seen_tees));
-                source_left
-            },
-
-            HfPlusNode::Map { f, input } =>             
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Map{f, input: input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-
-            HfPlusNode::FlatMap { f, input } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::FlatMap{f, input: input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::Filter { f, input } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Filter{f, input: input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::FilterMap { f, input } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::FilterMap{f, input: input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::Sort(input) => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Sort(input.clone()),
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::DeferTick(input) => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::DeferTick(input.clone()),
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::GateSignal(input, signal) => {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {
-                    node: HfPlusNode::GateSignal(input.clone(), signal.clone()),
-                    next: prev
-                }));
-                let mut source_input = input.create_inverted_graph(vec![cur.clone()], seen_tees);
-                source_input.extend(signal.create_inverted_graph(vec![cur], seen_tees));
-                source_input
-            },
-
-            HfPlusNode::Enumerate(input) => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Enumerate(input.clone()),
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::Inspect { f, input } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Inspect{f, input: input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::Unique(input) => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Unique(input.clone()),
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::Fold { init, acc, input } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Fold{init, acc, input:input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::FoldKeyed { init, acc, input } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::FoldKeyed{init, acc, input:input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::Reduce { f, input } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Reduce{f, input: input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
-            HfPlusNode::ReduceKeyed { f, input } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::ReduceKeyed{f, input: input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
+            // depends on the inner
+            HfPlusNode::Tee { inner } => inner.borrow().clone().is_my_output_set_monotonic(cycle_sink_ident_map),
+            // return true since it is a persist.
+            HfPlusNode::Persist(inner) => true,
+            // return false, it is the difference between the ticks.
+            HfPlusNode::Delta(inner) => false,
+            // if the output of the union is monotonic, then it's left and right are both monotonic.
+            HfPlusNode::Union(left, right) => left.is_my_output_set_monotonic(cycle_sink_ident_map) && right.is_my_output_set_monotonic(cycle_sink_ident_map),
+            HfPlusNode::CrossProduct(left, right) => left.is_my_output_set_monotonic(cycle_sink_ident_map) && right.is_my_output_set_monotonic(cycle_sink_ident_map),
+            HfPlusNode::ZipWithSingleton(left, right) => left.is_my_output_set_monotonic(cycle_sink_ident_map) && right.is_my_output_set_monotonic(cycle_sink_ident_map),
+            HfPlusNode::Join(left, right) => left.is_my_output_set_monotonic(cycle_sink_ident_map) && right.is_my_output_set_monotonic(cycle_sink_ident_map),
+            // difference is not monotonic, left - right
+            HfPlusNode::Difference(left, right) => false,
+            HfPlusNode::AntiJoin(left, right) => false,
+            // depends on the inner
+            HfPlusNode::Map { f, input } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            HfPlusNode::FlatMap { f, input } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            HfPlusNode::Filter { f, input } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            HfPlusNode::FilterMap { f, input } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            // TODO: depends on the input?
+            HfPlusNode::Sort(input) => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            // TODO: depends on the input?
+            HfPlusNode::DeferTick(input) => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            // TODO: depends on the input? 
+            HfPlusNode::GateSignal(input, signal) => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            //  TODO: depends on the input? 
+            HfPlusNode::Enumerate(input) => false,
+            HfPlusNode::Inspect { f, input } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            // depends on the input
+            HfPlusNode::Unique(input) => input.is_my_output_set_monotonic(cycle_sink_ident_map),
+            // TODO: what if it is a set and inset the new input? that could be monotonic. 
+            HfPlusNode::Fold { init, acc, input } => false,
+            HfPlusNode::FoldKeyed { init, acc, input } => false,
+            HfPlusNode::Reduce { f, input } => false,
+            HfPlusNode::ReduceKeyed { f, input } => false,
+            // depends on the input
             HfPlusNode::Network {
                 to_location,
                 serialize_pipeline,
@@ -583,25 +498,12 @@ impl HfPlusNode {
                 source_expr,
                 deserialize_pipeline,
                 input,
-            } => 
-            {
-                let cur = Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode{
-                    node: HfPlusNode::Network{to_location,
-                        serialize_pipeline,
-                        sink_expr,
-                        source_expr,
-                        deserialize_pipeline, 
-                        input: input.clone()},
-                    next: prev,
-                }));
-                input.create_inverted_graph(vec![cur], seen_tees)
-            },
-
+            } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
             // o => vec![Rc::new(RefCell::new(HfPlusGraphNode::HfPlusNode {node: o, next: prev}))]
-
         }
-    }
 
+
+    }
 
     pub fn transform_children(
         self,
@@ -1387,269 +1289,3 @@ impl HfPlusNode {
     }
 }
 
-
-/* 
-
-    Some formatted output for better visualization.
-
-*/
-
-impl fmt::Display for HfPlusGraphNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HfPlusGraphNode::HfPlusLeaf(leaf) => match leaf {
-                HfPlusLeaf::ForEach { f: func, .. } => {
-                    write!(f, "ForEach(f: {})", func)
-                }
-                HfPlusLeaf::DestSink { .. } => write!(f, "DestSink"),
-                HfPlusLeaf::CycleSink { .. } => write!(f, "CycleSink"),
-            },
-            
-            HfPlusGraphNode::HfPlusNode { node, next } => {
-                match node {
-                    HfPlusNode::Source { source, location_id } => {
-                        write!(f, "Source(source: {:?}, location_id: {})", source, location_id)?
-                    }
-                    HfPlusNode::Placeholder => write!(f, "Placeholder")?,
-                    HfPlusNode::CycleSource { ident, location_id } => {
-                        write!(f, "CycleSource(ident, location_id: {})", location_id)?
-                    }
-                    HfPlusNode::Tee { inner } => {
-                        write!(f, "Tee(inner: {:?})", inner)?
-                    }
-                    HfPlusNode::Persist(inner) => {
-                        write!(f, "Persist(inner)")?
-                    }
-                    HfPlusNode::Delta(inner) => {
-                        write!(f, "Delta(inner)")?
-                    }
-                    HfPlusNode::CrossProduct(left, right) => {
-                        write!(f, "CrossProduct(left, right)")?
-                    }
-                    HfPlusNode::ZipWithSingleton(left, right) => {
-                        write!(f, "ZipWithSingleton(left, right)")?
-                    }
-                    HfPlusNode::Join(left, right) => {
-                        write!(f, "Join(left, right)")?
-                    }
-                    HfPlusNode::Union(_left, _right) => {
-                        // write!(f, "Union(left, right)", left, right)?
-                        write!(f, "Union(left, right)")?
-                    }
-                    HfPlusNode::Difference(left, right) => {
-                        write!(f, "Difference(left, right)")?
-                    }
-                    HfPlusNode::AntiJoin(left, right) => {
-                        write!(f, "AntiJoin(left, right)")?
-                    }
-                    HfPlusNode::Map { f:func, input } => {
-                        write!(f, "Map(f: {}, input)", func)?
-                    }
-                    HfPlusNode::FlatMap { f:func, input } => {
-                        write!(f, "FlatMap(f: {}, input)", func)?
-                    }
-                    HfPlusNode::Filter { f:func, input } => {
-                        write!(f, "Filter(f: {}, input)", func)?
-                    }
-                    HfPlusNode::FilterMap { f:func, input } => {
-                        write!(f, "FilterMap(f: {}, input)", func)?
-                    }
-                    HfPlusNode::DeferTick(inner) => {
-                        write!(f, "DeferTick(inner)")?
-                    }
-                    HfPlusNode::GateSignal(input, signal) => {
-                        write!(f, "GateSignal(input, signal)")?
-                    }
-                    HfPlusNode::Enumerate(inner) => {
-                        write!(f, "Enumerate(inner)")?
-                    }
-                    HfPlusNode::Inspect { f:func, input } => {
-                        write!(f, "Inspect(f: {}, input)", func)?
-                    }
-                    HfPlusNode::Unique(inner) => {
-                        write!(f, "Unique(inner)")?
-                    }
-                    HfPlusNode::Sort(inner) => {
-                        write!(f, "Sort(inner)")?
-                    }
-                    HfPlusNode::Fold { init, acc, input } => {
-                        write!(f, "Fold(init:{}, acc:{}, inner)", init, acc)?
-                    }
-                    HfPlusNode::FoldKeyed { init, acc, input } => {
-                        write!(f, "FoldKeyed(init:{}, acc:{}, inner)", init, acc)?
-                    }
-                    HfPlusNode::Reduce { f:func, input } => {
-                        write!(f, "Reduce(f:{}, input)", func)?
-                    }
-                    HfPlusNode::ReduceKeyed { f:func, input } => {
-                        write!(f, "ReduceKeyed(f:{}, input)", func)?
-                    }
-                    HfPlusNode::Network { to_location, serialize_pipeline, sink_expr, source_expr, deserialize_pipeline, input } => {
-                        write!(f, "Network(to_location: {}, serialize_pipeline: {:?}, sink_expr: {}, source_expr: {}, deserialize_pipeline: {:?}, input)", to_location, serialize_pipeline, sink_expr, source_expr, deserialize_pipeline)?
-                    }
-                }
-                if !next.is_empty() {
-                    write!(f, " -> ")?;
-                    for (i, child) in next.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, " | ")?; // multiple output. seems there's no multiple output. TODO: change the vec! to single output
-                        }
-                        write!(f, "{}", child.borrow())?;
-                    }
-                }
-                Ok(())
-            }
-            HfPlusGraphNode::HfPlusSource { node, next } => {
-                // match node {
-                //     HfPlusNode::Source { source, location_id } => {
-                //         write!(f, "{}", source)?
-                //     }
-                //     o => write!(f, "{:?}", o)?,
-                // }
-                write!(f, "{}", node)?;
-                if !next.is_empty() {
-                    write!(f, " -> ")?;
-                    for (i, child) in next.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, " | ")?; // 多个分支的情况
-                        }
-                        write!(f, "{}", child.borrow())?;
-                    }
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-impl fmt::Display for DebugExpr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.to_token_stream())
-    }
-}
-
-impl fmt::Display for HfPlusLeaf {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HfPlusLeaf::ForEach { f: func, input } => {
-                write!(f, "ForEach(f: {}) -> {}", func, input)
-            }
-            HfPlusLeaf::DestSink { sink, input } => {
-                write!(f, "DestSink(sink: {}) -> {}", sink, input)
-            }
-            HfPlusLeaf::CycleSink { ident, location_id, input } => {
-                write!(f, "CycleSink(ident: {}, location_id: {}) -> {}", ident, location_id, input)
-            }
-        }
-    }
-}
-
-impl fmt::Display for HfPlusSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HfPlusSource::Stream(expr) => {
-                write!(f, "Stream(expr: {})", expr)
-            }
-
-            HfPlusSource::Iter(expr) => {
-                write!(f, "Iter(expr: {})", expr)
-            }
-
-            HfPlusSource::Interval(expr) => {
-                write!(f, "Interval(expr: {})", expr)
-            }
-
-            HfPlusSource::Spin() => {
-                write!(f, "Spin()")
-            }
-        }
-    }
-}
-
-impl fmt::Display for HfPlusNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HfPlusNode::Placeholder => write!(f, "Placeholder"),
-            HfPlusNode::Source { source, location_id } => {
-                write!(f, "Source(source, location_id: {}) -> {}", location_id, source)
-            }
-            HfPlusNode::CycleSource { ident, location_id } => {
-                write!(f, "CycleSource(ident, location_id: {}) -> {}", location_id, ident)
-            }
-            HfPlusNode::Tee { inner } => {
-                write!(f, "Tee(inner) -> {}", inner.borrow())
-            }
-            HfPlusNode::Persist(inner) => {
-                write!(f, "Persist(inner) -> {}", inner)
-            }
-            HfPlusNode::Delta(inner) => {
-                write!(f, "Delta(inner) -> {}", inner)
-            }
-            // format output for two input, separate with |. 
-            HfPlusNode::Union(left, right) => {
-                write!(f, "Union(left, right): left -> {} | right -> {}", left, right)
-            }
-            HfPlusNode::CrossProduct(left, right) => {
-                write!(f, "CrossProduct(left, right): left -> {} | right -> {}", left, right)
-            }
-            HfPlusNode::ZipWithSingleton(left, right) => {
-                write!(f, "ZipWithSingleton(left, right): left -> {} | right -> {}", left, right)
-            }
-            HfPlusNode::Join(left, right) => {
-                write!(f, "Join(left, right): left -> {} | right -> {}", left, right)
-            }
-            HfPlusNode::Difference(left, right) => {
-                write!(f, "Difference(left, right): left -> {} | right -> {}", left, right)
-            }
-            HfPlusNode::AntiJoin(left, right) => {
-                write!(f, "AntiJoin(left, right): left -> {}| right -> {}", left, right)
-            }
-            HfPlusNode::Map { f:func, input } => {
-                write!(f, "Map(f: {}, input) -> {}", func, input)
-            }
-            HfPlusNode::FlatMap { f:func, input } => {
-                write!(f, "FlatMap(f: {}, input) -> {}", func, input)
-            }
-            HfPlusNode::Filter { f:func, input } => {
-                write!(f, "Filter(f: {}, input) -> {}", func, input)
-            }
-            HfPlusNode::FilterMap { f:func, input } => {
-                write!(f, "FilterMap(f: {}, input) -> {}", func, input)
-            }
-            HfPlusNode::DeferTick(inner) => {
-                write!(f, "DeferTick(inner) -> {}", inner)
-            }
-            HfPlusNode::GateSignal(input, signal) => {
-                write!(f, "GateSignal(input, signal): input -> {} | signal -> {}", input, signal)
-            }
-            HfPlusNode::Enumerate(inner) => {
-                write!(f, "Enumerate(inner) -> {}", inner)
-            }
-            HfPlusNode::Inspect { f:func, input } => {
-                write!(f, "Inspect(f: {}, input) -> {}", func, input)
-            }
-            HfPlusNode::Unique(inner) => {
-                write!(f, "Unique(inner) -> {}", inner)
-            }
-            HfPlusNode::Sort(inner) => {
-                write!(f, "Sort(inner) -> {}", inner)
-            }
-            HfPlusNode::Fold { init, acc, input } => {
-                write!(f, "Fold(init:{}, acc:{}, inner) -> {}", init, acc, input)
-            }
-            HfPlusNode::FoldKeyed { init, acc, input } => {
-                write!(f, "FoldKeyed(init:{}, acc:{}, inner) -> {}", init, acc, input)
-            }
-            HfPlusNode::Reduce { f:func, input } => {
-                write!(f, "Reduce(f:{}, input) -> {}", func, input)
-            }
-            HfPlusNode::ReduceKeyed { f:func, input } => {
-                write!(f, "ReduceKeyed(f:{}, input) -> {}", func, input)
-            }
-            HfPlusNode::Network { to_location, serialize_pipeline, sink_expr, source_expr, deserialize_pipeline, input } => {
-                write!(f, "Network(to_location: {}, serialize_pipeline: {:?}, sink_expr: {}, source_expr: {}, deserialize_pipeline: {:?}, input) -> {}", to_location, serialize_pipeline, sink_expr, source_expr, deserialize_pipeline, input)
-            }
-
-        }
-    }
-}
