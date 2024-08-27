@@ -157,10 +157,6 @@ impl HfPlusLeaf {
 
     }
 
-    pub fn is_output_set_monotonic(self) -> bool {
-        return false;
-    }
-
     pub fn transform_children(
         self,
         mut transform: impl FnMut(HfPlusNode, &mut SeenTees) -> HfPlusNode,
@@ -389,31 +385,31 @@ impl HfPlusNode {
             left.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter);
             right.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter)
         },
-        // HfPlusNode::CrossProduct(left, right) => 
-        // {
-        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
-        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
-        // },
-        // HfPlusNode::ZipWithSingleton(left, right) => 
-        // {
-        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
-        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
-        // },
-        // HfPlusNode::Join(left, right) => 
-        // {
-        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
-        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
-        // },
-        // HfPlusNode::Difference(left, right) => 
-        // {
-        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
-        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
-        // },
-        // HfPlusNode::AntiJoin(left, right) => 
-        // {
-        //     left.apply_function_to_all_nodes(&func, func_mut_parameter);
-        //     right.apply_function_to_all_nodes(&func, func_mut_parameter);
-        // },
+        HfPlusNode::CrossProduct(left, right) => 
+        {
+            left.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter);
+            right.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter)
+        },
+        HfPlusNode::ZipWithSingleton(left, right) => 
+        {
+            left.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter);
+            right.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter)
+        },
+        HfPlusNode::Join(left, right) => 
+        {
+            left.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter);
+            right.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter)
+        },
+        HfPlusNode::Difference(left, right) => 
+        {
+            left.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter);
+            right.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter)
+        },
+        HfPlusNode::AntiJoin(left, right) => 
+        {
+            left.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter);
+            right.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter)
+        },
         HfPlusNode::Map { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
         HfPlusNode::FlatMap { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
         HfPlusNode::Filter { f: _, input } => input.apply_function_to_all_nodes(func_leaf, func_node, func_mut_parameter),
@@ -456,7 +452,7 @@ impl HfPlusNode {
                 if cycle_sink_ident_map.contains_key(&ident) {
                     cycle_sink_ident_map[&ident]
                 } else {
-                    panic!("cycle source has not decided!")
+                    panic!("cycle source has not decide monotonicity!")
                 }
             },
             // depends on the inner
@@ -480,16 +476,13 @@ impl HfPlusNode {
             HfPlusNode::FilterMap { f, input } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
             // TODO: depends on the input?
             HfPlusNode::Sort(input) => input.is_my_output_set_monotonic(cycle_sink_ident_map),
-            // TODO: depends on the input?
             HfPlusNode::DeferTick(input) => input.is_my_output_set_monotonic(cycle_sink_ident_map),
             // TODO: depends on the input? 
             HfPlusNode::GateSignal(input, signal) => input.is_my_output_set_monotonic(cycle_sink_ident_map),
-            //  TODO: depends on the input? 
             HfPlusNode::Enumerate(input) => false,
             HfPlusNode::Inspect { f, input } => input.is_my_output_set_monotonic(cycle_sink_ident_map),
             // depends on the input
             HfPlusNode::Unique(input) => input.is_my_output_set_monotonic(cycle_sink_ident_map),
-            // TODO: what if it is a set and inset the new input? that could be monotonic. 
             HfPlusNode::Fold { init, acc, input } => false,
             HfPlusNode::FoldKeyed { init, acc, input } => false,
             HfPlusNode::Reduce { f, input } => false,

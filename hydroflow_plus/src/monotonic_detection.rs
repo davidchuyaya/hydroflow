@@ -259,5 +259,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn is_my_output_set_monotonic_source_continue_if_test() {
+        let flow = crate::builder::FlowBuilder::<MultiGraph>::new();
+        let process = flow.process(&());
+        let source: crate::Stream<i32, crate::stream::Windowed, crate::location::MultiNode> = flow.source_iter(&process, q!(0..15));
+        let source2 = flow.source_iter(&process, q!(0..1));
+        source.continue_if(source2).for_each(q!(|i| println!("{}",i)));
+        let mut cycle_sink_ident_map: HashMap<Ident, bool> = HashMap::new();
+
+        let built = flow.extract();
+        println!("checking each node is monotonic or not: ");
+        println!("Expected output: Yes after persist");
+        for node in built.ir.clone() {
+            node.apply_function_to_all_nodes(
+                &monotonic_detection_called_fn_leaf,
+                &monotonic_detection_called_fn_node,
+                &mut cycle_sink_ident_map,
+            );
+        }
+    }
+
+
 
 }
