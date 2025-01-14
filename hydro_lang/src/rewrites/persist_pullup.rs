@@ -5,7 +5,7 @@ use crate::ir::*;
 
 fn copy_metadata_without_id(metadata: &HydroNodeMetadata) -> HydroNodeMetadata {
     HydroNodeMetadata {
-        id: None,
+        id: None, // TODO: pick a random new ID
         location_kind: metadata.location_kind.clone(),
         output_type: metadata.output_type.clone(),
     }
