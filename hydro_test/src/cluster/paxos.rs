@@ -759,64 +759,52 @@ pub fn acceptor_p2<'a, P: PaxosPayload, S: Clone>(
         p_to_acceptors_p2a.tick_batch(acceptor_tick)
     };
 
+    let (a_prev_max_checkpoint_complete_cycle, a_prev_max_checkpoint) =
+        acceptor_tick.cycle_with_initial(acceptor_tick.singleton(q!(0)));
+
     let a_new_checkpoint = unsafe {
         // SAFETY: we can arbitrarily snapshot the checkpoint sequence number,
         // since a delayed garbage collection does not affect correctness
         a_checkpoint.latest_tick(acceptor_tick)
-    }
-    .delta()
-    .map(q!(|min_seq| CheckpointOrP2a::Checkpoint(min_seq)));
-    // .inspect(q!(|(min_seq, p2a): &(i32, P2a)| println!("Acceptor new checkpoint: {:?}", min_seq)));
+    };
+
+    let a_gc_slots = a_prev_max_checkpoint
+        .zip(a_new_checkpoint.clone())
+        .flat_map_unordered(q!(|(prev, new)| prev..new ));
+
+    let a_max_checkpoint = a_prev_max_checkpoint
+        .into_stream()
+        .chain(a_new_checkpoint.into_stream())
+        .max()
+        .unwrap_or(acceptor_tick.singleton(q!(0)));
+    a_prev_max_checkpoint_complete_cycle.complete_next_tick(a_max_checkpoint);
 
     let a_p2as_to_place_in_log = p_to_acceptors_p2a_batch
         .clone()
         .cross_singleton(a_max_ballot.clone()) // Don't consider p2as if the current ballot is higher
         .filter_map(q!(|(p2a, max_ballot)|
             if p2a.ballot >= max_ballot {
-                Some(CheckpointOrP2a::P2a(p2a))
+                Some((p2a.slot, p2a))
             } else {
                 None
             }
         ));
     let a_log = a_p2as_to_place_in_log
-        .chain(a_new_checkpoint.into_stream())
-        .all_ticks_atomic()
-        .fold_commutative(
-            q!(|| (None, HashMap::new())),
-            q!(|(prev_checkpoint, log), checkpoint_or_p2a| {
-                match checkpoint_or_p2a {
-                    CheckpointOrP2a::Checkpoint(new_checkpoint) => {
-                        if prev_checkpoint
-                            .map(|prev| new_checkpoint > prev)
-                            .unwrap_or(true)
-                        {
-                            for slot in (prev_checkpoint.unwrap_or(0))..new_checkpoint {
-                                log.remove(&slot);
-                            }
-
-                            *prev_checkpoint = Some(new_checkpoint);
-                        }
-                    }
-                    CheckpointOrP2a::P2a(p2a) => {
-                        // This is a regular p2a message. Insert it into the log if it is not checkpointed and has a higher ballot than what was there before
-                        if prev_checkpoint.map(|prev| p2a.slot > prev).unwrap_or(true)
-                            && log
-                                .get(&p2a.slot)
-                                .map(|prev_p2a: &LogValue<_>| p2a.ballot > prev_p2a.ballot)
-                                .unwrap_or(true)
-                        {
-                            log.insert(
-                                p2a.slot,
-                                LogValue {
-                                    ballot: p2a.ballot,
-                                    value: p2a.value,
-                                },
-                            );
-                        }
-                    }
+        .fold_keyed_commutative(
+            q!(|| None),
+            q!(|prev_entry, p2a| {
+                // Insert it into the log if it is has a higher ballot than what was there before
+                if prev_entry.map(|prev: LogValue<P>| p2a.ballot > prev.ballot).unwrap_or(true)
+                {
+                    *prev_entry = Some(LogValue {
+                        ballot: p2a.ballot,
+                        value: p2a.value,
+                    });
                 }
             }),
-        );
+        )
+        .collect::<HashMap>() // Proposed function to turn stream into HashMap
+        .garbage_collect(a_gc_slots); // Proposed function for GC
 
     let a_to_proposers_p2b = p_to_acceptors_p2a_batch
         .cross_singleton(a_max_ballot)
