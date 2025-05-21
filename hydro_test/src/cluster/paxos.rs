@@ -803,8 +803,8 @@ pub fn acceptor_p2<'a, P: PaxosPayload, S: Clone>(
                 }
             }),
         )
-        .collect::<HashMap>() // Proposed function to turn stream into HashMap
-        .garbage_collect(a_gc_slots); // Proposed function for GC
+        .garbage_collect(a_gc_slots) // Proposed function for GC
+        .collect_singleton(); // Proposed function to turn stream into HashMap
 
     let a_to_proposers_p2b = p_to_acceptors_p2a_batch
         .cross_singleton(a_max_ballot)
