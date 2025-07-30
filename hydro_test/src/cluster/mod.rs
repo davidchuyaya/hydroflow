@@ -9,5 +9,6 @@ pub mod paxos;
 pub mod paxos_bench;
 pub mod paxos_with_client;
 pub mod simple_cluster;
+pub mod simple_kv_bench;
 pub mod two_pc;
 pub mod two_pc_bench;
