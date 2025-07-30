@@ -3,6 +3,7 @@ pub mod compartmentalized_paxos;
 pub mod compute_pi;
 pub mod echo_server;
 pub mod kv_replica;
+pub mod lock_server;
 pub mod many_to_many;
 pub mod map_reduce;
 pub mod paxos;
