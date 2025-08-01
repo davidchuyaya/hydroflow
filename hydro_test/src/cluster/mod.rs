@@ -13,3 +13,4 @@ pub mod simple_cluster;
 pub mod simple_kv_bench;
 pub mod two_pc;
 pub mod two_pc_bench;
+pub mod web_submit;

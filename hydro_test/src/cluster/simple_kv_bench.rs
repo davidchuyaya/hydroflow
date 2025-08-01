@@ -59,12 +59,7 @@ mod tests {
         let clients = builder.cluster();
         let client_aggregator = builder.process();
 
-        simple_kv_bench(
-            1,
-            &kv,
-            &clients,
-            &client_aggregator,
-        );
+        simple_kv_bench(1, &kv, &clients, &client_aggregator);
         let built = builder.with_default_optimize::<HydroDeploy>();
 
         hydro_lang::ir::dbg_dedup_tee(|| {
@@ -92,12 +87,7 @@ mod tests {
         let clients = builder.cluster();
         let client_aggregator = builder.process();
 
-        simple_kv_bench(
-            1,
-            &kv,
-            &clients,
-            &client_aggregator,
-        );
+        simple_kv_bench(1, &kv, &clients, &client_aggregator);
         let mut deployment = Deployment::new();
 
         let nodes = builder
