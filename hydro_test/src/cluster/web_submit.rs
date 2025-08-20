@@ -72,7 +72,8 @@ pub fn web_submit<'a, Client>(
     Stream<(ClusterId<Client>, ()), Process<'a, Server>, Unbounded, NoOrder>,
 ) {
     let user_auth_tick = server.tick();
-    let post_auth_tick = server.tick();
+    let lectures_tick = server.tick();
+    let question_answer_tick = server.tick();
 
     // Add user
     let add_user_with_api_key = add_user.map(q!(|(client_id, (email, is_admin))| {
@@ -120,7 +121,7 @@ pub fn web_submit<'a, Client>(
             api_key,
             ((client_id, lecture_id, lecture), (email, is_admin)),
         )| *is_admin));
-    let curr_lectures = unsafe { lectures.tick_batch(&post_auth_tick) };
+    let curr_lectures = unsafe { lectures.tick_batch(&lectures_tick) };
     let curr_lectures_hashmap = curr_lectures.clone().persist().fold_commutative_idempotent(
         q!(|| HashMap::new()),
         q!(
@@ -129,7 +130,7 @@ pub fn web_submit<'a, Client>(
             }
         ),
     );
-    // Only done after the post_auth_tick to ensure that once the client gets the response, the lecture has been added
+    // Only done after the lectures_tick to ensure that once the client gets the response, the lecture has been added
     let add_lecture_response = curr_lectures.all_ticks().map(q!(|(
         api_key,
         ((client_id, lecture_id, lecture), (email, is_admin)),
@@ -149,7 +150,7 @@ pub fn web_submit<'a, Client>(
             api_key,
             ((client_id, question, question_id, lecture_id), (email, is_admin)),
         )| *is_admin));
-    let add_question_this_tick = unsafe { add_question_auth.tick_batch(&post_auth_tick) };
+    let add_question_this_tick = unsafe { add_question_auth.tick_batch(&question_answer_tick) };
     let curr_questions = add_question_this_tick
         .clone()
         .map(q!(|(
@@ -157,7 +158,7 @@ pub fn web_submit<'a, Client>(
             ((client_id, question, question_id, lecture_id), (email, is_admin)),
         )| (lecture_id, (question_id, question))))
         .persist();
-    // Only done after the post_auth_tick to ensure that once the client gets the response, the question has been added
+    // Only done after the question_answer_tick to ensure that once the client gets the response, the question has been added
     let add_question_response = add_question_this_tick.all_ticks().map(q!(|(
         api_key,
         ((client_id, question, question_id, lecture_id), (email, is_admin)),
@@ -179,7 +180,7 @@ pub fn web_submit<'a, Client>(
         .join(curr_users.clone())
         .all_ticks()
         .map(q!(|(api_key, (client_id, (email, is_admin)))| client_id));
-    let list_lectures_response = unsafe { list_lectures_auth.tick_batch(&post_auth_tick) }
+    let list_lectures_response = unsafe { list_lectures_auth.tick_batch(&lectures_tick) }
         .cross_singleton(curr_lectures_hashmap)
         .all_ticks();
 
@@ -190,7 +191,7 @@ pub fn web_submit<'a, Client>(
     let add_answer_auth = unsafe { add_answer_pre_join.tick_batch(&user_auth_tick) }
         .join(curr_users.clone())
         .all_ticks();
-    let add_answer_this_tick = unsafe { add_answer_auth.tick_batch(&post_auth_tick) };
+    let add_answer_this_tick = unsafe { add_answer_auth.tick_batch(&question_answer_tick) };
     let curr_answers = add_answer_this_tick
         .clone()
         .map(q!(|(
@@ -198,7 +199,7 @@ pub fn web_submit<'a, Client>(
             ((client_id, question_id, answer), (email, is_admin)),
         )| ((question_id, api_key), answer)))
         .persist();
-    // Only done after the post_auth_tick to ensure that once the client gets the response, the answer has been added
+    // Only done after the question_answer_tick to ensure that once the client gets the response, the answer has been added
     let add_answer_response = add_answer_this_tick.all_ticks().map(q!(|(
         api_key,
         ((client_id, question_id, answer), (email, is_admin)),
@@ -225,7 +226,7 @@ pub fn web_submit<'a, Client>(
             }));
     // Find all questions with that ID
     let list_lecture_questions_all_question_only =
-        unsafe { list_lecture_questions_all_auth.tick_batch(&post_auth_tick) }
+        unsafe { list_lecture_questions_all_auth.tick_batch(&question_answer_tick) }
             .join(curr_questions.clone())
             .map(q!(|(lecture_id, (client_id, (question_id, question)))| (
                 question_id,
@@ -277,7 +278,7 @@ pub fn web_submit<'a, Client>(
                 ((client_id, lecture_id), (email, is_admin)),
             )| (lecture_id, (client_id, api_key))));
     let list_lecture_questions_user_question_only =
-        unsafe { list_lecture_questions_user_auth.tick_batch(&post_auth_tick) }
+        unsafe { list_lecture_questions_user_auth.tick_batch(&question_answer_tick) }
             .join(curr_questions)
             .map(q!(|(
                 lecture_id,
