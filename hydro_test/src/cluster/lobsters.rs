@@ -139,3 +139,12 @@ pub fn lobsters<'a, Client>(
         ),
     );
 }
+
+fn generate_api_key(email: String) -> String {
+    let secret = "There is no secret ingredient";
+    let mut hasher = Sha256::new();
+    hasher.update(email.as_bytes());
+    hasher.update(secret.as_bytes());
+    let hash = hasher.finalize();
+    format!("{:x}", hash)
+}
