@@ -17,7 +17,11 @@ pub struct Server {}
 /// - add_answer (takes api_key, question_id, answer)
 ///
 ///   Any call with an invalid API key (either it does not exist or does not have the privileges required) will not receive a response.
-#[expect(clippy::too_many_arguments, clippy::type_complexity, reason = "internal Web Submit code // TODO")]
+#[expect(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "internal Web Submit code // TODO"
+)]
 pub fn web_submit<'a, Client>(
     server: &Process<'a, Server>,
     add_lecture: Stream<
@@ -82,7 +86,10 @@ pub fn web_submit<'a, Client>(
         let api_key = self::generate_api_key(email.clone());
         (client_id, (email, is_admin, api_key))
     }));
-    let users_this_tick_with_api_key = unsafe { add_user_with_api_key.tick_batch(&user_auth_tick) };
+    let users_this_tick_with_api_key = add_user_with_api_key.batch(
+        &user_auth_tick,
+        nondet!(/** Snapshot current users to approve/deny access */),
+    );
     // Persisted users
     let curr_users = users_this_tick_with_api_key
         .clone()
@@ -116,14 +123,19 @@ pub fn web_submit<'a, Client>(
         add_lecture.map(q!(|(client_id, (api_key, lecture_id, lecture))| {
             (api_key, (client_id, lecture_id, lecture))
         }));
-    let lectures = unsafe { add_lecture_pre_join.tick_batch(&user_auth_tick) }
+    let lectures = add_lecture_pre_join
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Compare against current users to approve/deny access */),
+        )
         .join(curr_users.clone())
         .all_ticks()
         .filter(q!(|(
             _api_key,
             ((_client_id, _lecture_id, _lecture), (_email, is_admin)),
         )| *is_admin));
-    let curr_lectures = unsafe { lectures.tick_batch(&lectures_tick) };
+    let curr_lectures =
+        lectures.batch(&lectures_tick, nondet!(/** Snapshot of current lectures */));
     let curr_lectures_hashmap = curr_lectures.clone().persist().fold_commutative_idempotent(
         q!(|| HashMap::new()),
         q!(
@@ -145,14 +157,21 @@ pub fn web_submit<'a, Client>(
     )| {
         (api_key, (client_id, question, question_id, lecture_id))
     }));
-    let add_question_auth = unsafe { add_question_pre_join.tick_batch(&user_auth_tick) }
+    let add_question_auth = add_question_pre_join
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Compare against current users to approve/deny access */),
+        )
         .join(curr_users.clone())
         .all_ticks()
         .filter(q!(|(
             _api_key,
             ((_client_id, _question, _question_id, _lecture_id), (_email, is_admin)),
         )| *is_admin));
-    let add_question_this_tick = unsafe { add_question_auth.tick_batch(&question_answer_tick) };
+    let add_question_this_tick = add_question_auth.batch(
+        &question_answer_tick,
+        nondet!(/** Snapshot of current questions */),
+    );
     let curr_questions = add_question_this_tick
         .clone()
         .map(q!(|(
@@ -168,7 +187,11 @@ pub fn web_submit<'a, Client>(
 
     // Get users
     let get_users_pre_join = get_users.map(q!(|(client_id, api_key)| (api_key, client_id)));
-    let get_users_response = unsafe { get_users_pre_join.tick_batch(&user_auth_tick) }
+    let get_users_response = get_users_pre_join
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Compare against current users to approve/deny access */),
+        )
         .join(curr_users.clone())
         .filter_map(q!(|(_api_key, (client_id, (_email, is_admin)))| {
             if is_admin { Some(client_id) } else { None }
@@ -178,11 +201,19 @@ pub fn web_submit<'a, Client>(
 
     // List lectures
     let list_lectures_pre_join = list_lectures.map(q!(|(client_id, api_key)| (api_key, client_id)));
-    let list_lectures_auth = unsafe { list_lectures_pre_join.tick_batch(&user_auth_tick) }
+    let list_lectures_auth = list_lectures_pre_join
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Compare against current users to approve/deny access */),
+        )
         .join(curr_users.clone())
         .all_ticks()
         .map(q!(|(_api_key, (client_id, (_email, _is_admin)))| client_id));
-    let list_lectures_response = unsafe { list_lectures_auth.tick_batch(&lectures_tick) }
+    let list_lectures_response = list_lectures_auth
+        .batch(
+            &lectures_tick,
+            nondet!(/** Join with snapshot of current lectures */),
+        )
         .cross_singleton(curr_lectures_hashmap)
         .all_ticks();
 
@@ -190,10 +221,17 @@ pub fn web_submit<'a, Client>(
     let add_answer_pre_join = add_answer.map(q!(|(client_id, (api_key, question_id, answer))| {
         (api_key, (client_id, question_id, answer))
     }));
-    let add_answer_auth = unsafe { add_answer_pre_join.tick_batch(&user_auth_tick) }
+    let add_answer_auth = add_answer_pre_join
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Compare against current users to approve/deny access */),
+        )
         .join(curr_users.clone())
         .all_ticks();
-    let add_answer_this_tick = unsafe { add_answer_auth.tick_batch(&question_answer_tick) };
+    let add_answer_this_tick = add_answer_auth.batch(
+        &question_answer_tick,
+        nondet!(/** Snapshot of current answers */),
+    );
     let curr_answers = add_answer_this_tick
         .clone()
         .map(q!(|(
@@ -212,32 +250,42 @@ pub fn web_submit<'a, Client>(
         list_lecture_questions_all.map(q!(|(client_id, (api_key, lecture_id))| {
             (api_key, (client_id, lecture_id))
         }));
-    let list_lecture_questions_all_auth =
-        unsafe { list_lecture_questions_all_pre_join.tick_batch(&user_auth_tick) }
-            .join(curr_users.clone())
-            .all_ticks()
-            .filter_map(q!(|(
-                _api_key,
-                ((client_id, lecture_id), (_email, is_admin)),
-            )| {
-                if is_admin {
-                    Some((lecture_id, client_id))
-                } else {
-                    None
-                }
-            }));
+    let list_lecture_questions_all_auth = list_lecture_questions_all_pre_join
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Compare against current users to approve/deny access */),
+        )
+        .join(curr_users.clone())
+        .all_ticks()
+        .filter_map(q!(|(
+            _api_key,
+            ((client_id, lecture_id), (_email, is_admin)),
+        )| {
+            if is_admin {
+                Some((lecture_id, client_id))
+            } else {
+                None
+            }
+        }));
     // Find all questions with that ID
-    let list_lecture_questions_all_question_only =
-        unsafe { list_lecture_questions_all_auth.tick_batch(&question_answer_tick) }
-            .join(curr_questions.clone())
-            .map(q!(|(_lecture_id, (client_id, (question_id, question)))| (
-                question_id,
-                (client_id, question)
-            )));
+    let list_lecture_questions_all_question_only = list_lecture_questions_all_auth
+        .batch(
+            &question_answer_tick,
+            nondet!(/** Join with snapshot of current questions */),
+        )
+        .join(curr_questions.clone())
+        .map(q!(|(_lecture_id, (client_id, (question_id, question)))| (
+            question_id,
+            (client_id, question)
+        )));
     // Don't need to join on api_key since we're getting all answers, regardless of who wrote them
-    let curr_answers_no_api_key = curr_answers
-        .clone()
-        .map(q!(|((question_id, _api_key), answer)| (question_id, answer)));
+    let curr_answers_no_api_key =
+        curr_answers
+            .clone()
+            .map(q!(|((question_id, _api_key), answer)| (
+                question_id,
+                answer
+            )));
     // Find all answers with the question ID
     let list_lecture_questions_all_with_answer = list_lecture_questions_all_question_only
         .clone()
@@ -254,7 +302,8 @@ pub fn web_submit<'a, Client>(
         )));
     let list_lecture_questions_all_response = list_lecture_questions_all_with_answer
         .chain(list_lecture_questions_all_no_answer)
-        .fold_keyed_commutative_idempotent(
+        .into_keyed()
+        .fold_commutative_idempotent(
             q!(|| HashMap::new()),
             q!(|map, (question_id, question, answer)| {
                 let (_question, set_of_answers) =
@@ -264,6 +313,7 @@ pub fn web_submit<'a, Client>(
                 }
             }),
         )
+        .entries()
         .all_ticks();
 
     // List lecture questions user
@@ -271,24 +321,30 @@ pub fn web_submit<'a, Client>(
         list_lecture_questions_user.map(q!(|(client_id, (api_key, lecture_id))| {
             (api_key, (client_id, lecture_id))
         }));
-    let list_lecture_questions_user_auth =
-        unsafe { list_lecture_questions_user_pre_join.tick_batch(&user_auth_tick) }
-            .join(curr_users.clone())
-            .all_ticks()
-            .map(q!(|(
-                api_key,
-                ((client_id, lecture_id), (_email, _is_admin)),
-            )| (lecture_id, (client_id, api_key))));
-    let list_lecture_questions_user_question_only =
-        unsafe { list_lecture_questions_user_auth.tick_batch(&question_answer_tick) }
-            .join(curr_questions)
-            .map(q!(|(
-                _lecture_id,
-                ((client_id, api_key), (question_id, question)),
-            )| (
-                (question_id, api_key),
-                (client_id, question)
-            )));
+    let list_lecture_questions_user_auth = list_lecture_questions_user_pre_join
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Compare against current users to approve/deny access */),
+        )
+        .join(curr_users.clone())
+        .all_ticks()
+        .map(q!(|(
+            api_key,
+            ((client_id, lecture_id), (_email, _is_admin)),
+        )| (lecture_id, (client_id, api_key))));
+    let list_lecture_questions_user_question_only = list_lecture_questions_user_auth
+        .batch(
+            &question_answer_tick,
+            nondet!(/** Join with snapshot of current questions */),
+        )
+        .join(curr_questions)
+        .map(q!(|(
+            _lecture_id,
+            ((client_id, api_key), (question_id, question)),
+        )| (
+            (question_id, api_key),
+            (client_id, question)
+        )));
     // Find all answers with the question ID
     let list_lecture_questions_user_with_answer = list_lecture_questions_user_question_only
         .clone()
@@ -308,12 +364,14 @@ pub fn web_submit<'a, Client>(
         )));
     let list_lecture_questions_user_response = list_lecture_questions_user_with_answer
         .chain(list_lecture_questions_user_no_answer)
-        .fold_keyed_commutative_idempotent(
+        .into_keyed()
+        .fold_commutative_idempotent(
             q!(|| HashMap::new()),
             q!(|map, (question_id, question, answer)| {
                 map.insert(question_id, (question, answer));
             }),
         )
+        .entries()
         .all_ticks();
 
     (

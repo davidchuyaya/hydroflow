@@ -26,37 +26,38 @@ pub fn lock_server<'a, Client>(
         (client_id, virt_client_id, acquire)
     )));
 
-    let batched_payloads = unsafe {
-        // SAFETY: The order in which the server processes lock requests affects the lock state.
-        keyed_payloads.tick_batch(&server_tick).assume_ordering()
-    };
-    let lock_state = batched_payloads.clone().persist().reduce_keyed(q!(|(
-        curr_client_id,
-        curr_virt_client_id,
-        is_held_by_client,
-    ),
-                                                                         (
-        client_id,
-        virt_client_id,
-        acquire,
-    )| {
-        if acquire {
-            // If the lock is currently held by the server, give the client the lock
-            if !*is_held_by_client {
-                *curr_client_id = client_id;
-                *curr_virt_client_id = virt_client_id;
-                *is_held_by_client = true;
+    let batched_payloads = keyed_payloads
+        .batch(
+            &server_tick,
+            nondet!(/** Need to check who currently owns the lock */),
+        )
+        .assume_ordering(nondet!(/** First to acquire the lock wins */));
+    let lock_state = batched_payloads
+        .clone()
+        .persist()
+        .into_keyed()
+        .reduce(q!(
+            |(curr_client_id, curr_virt_client_id, is_held_by_client),
+             (client_id, virt_client_id, acquire)| {
+                if acquire {
+                    // If the lock is currently held by the server, give the client the lock
+                    if !*is_held_by_client {
+                        *curr_client_id = client_id;
+                        *curr_virt_client_id = virt_client_id;
+                        *is_held_by_client = true;
+                    }
+                } else {
+                    // If the client is releasing the lock and it holds it, give the lock back to the server
+                    if *is_held_by_client
+                        && *curr_virt_client_id == virt_client_id
+                        && *curr_client_id == client_id
+                    {
+                        *is_held_by_client = false;
+                    }
+                }
             }
-        } else {
-            // If the client is releasing the lock and it holds it, give the lock back to the server
-            if *is_held_by_client
-                && *curr_virt_client_id == virt_client_id
-                && *curr_client_id == client_id
-            {
-                *is_held_by_client = false;
-            }
-        }
-    }));
+        ))
+        .entries();
     let results = batched_payloads.join(lock_state).all_ticks().map(q!(|(
         server_id,
         (

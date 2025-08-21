@@ -1,6 +1,8 @@
 use hydro_lang::*;
 use hydro_std::bench_client::{bench_client, print_bench_results};
 
+use crate::cluster::paxos_bench::inc_u32_workload_generator;
+
 pub struct Kv;
 pub struct Client;
 pub struct Aggregator;
@@ -11,34 +13,33 @@ pub fn simple_kv_bench<'a>(
     clients: &Cluster<'a, Client>,
     client_aggregator: &Process<'a, Aggregator>,
 ) {
-    let bench_results = unsafe {
-        bench_client(
-            clients,
-            |payloads| {
-                let k_payloads = payloads.send_bincode(kv);
+    let bench_results = bench_client(
+        clients,
+        inc_u32_workload_generator,
+        |payloads| {
+            let k_tick = kv.tick();
+            let k_payloads = payloads.send_bincode(kv).batch(&k_tick, nondet!(/** TODO: Actually can use atomic() here, but there's no way to exit atomic in KeyedStreams? */));
 
-                let k_keyed_payloads = k_payloads
+            // Insert each payload into the KV store
+            k_payloads
                     .clone()
-                    .map(q!(|(client_id, (k, v))| (k, (client_id, v))));
-
-                // Insert each payload into the KV store
-                let k_tick = kv.tick();
-                k_keyed_payloads
-                    .tick_batch(&k_tick)
-                    .assume_ordering()
+                    .values()
+                    .assume_ordering(nondet!(/** Last writer wins. TODO: Technically, we only need to assume ordering over the keyed stream (ordering of values with different keys doesn't matter. But there's no .persist() for KeyedStreams) */))
                     .persist()
-                    .reduce_keyed(q!(|prev, new| {
+                    .into_keyed()
+                    .reduce(q!(|prev, new| {
                         *prev = new;
                     }))
+                    .entries()
                     .all_ticks()
                     .for_each(q!(|_| {})); // Do nothing, just need to end on a HydroLeaf
 
-                // Send committed requests back to the original client
-                k_payloads.send_bincode(clients)
-            },
-            num_clients_per_node,
-        )
-    };
+            // Send committed requests back to the original client
+            k_payloads.all_ticks().demux_bincode(clients).into()
+        },
+        num_clients_per_node,
+        nondet!(/** bench */),
+    );
 
     print_bench_results(bench_results, client_aggregator, clients);
 }

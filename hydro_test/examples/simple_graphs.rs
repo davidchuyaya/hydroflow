@@ -9,8 +9,8 @@ use hydro_lang::graph_util::GraphConfig;
 use hydro_optimize::decoupler;
 use hydro_optimize::deploy::ReusableHosts;
 use hydro_optimize::deploy_and_analyze::deploy_and_analyze;
+use hydro_test::cluster::simple_graphs::{Client, Server, get_graph_function};
 use hydro_test::cluster::simple_graphs_bench::{Aggregator, simple_graphs_bench};
-use hydro_test::cluster::simple_graphs::{get_graph_function, Client, Server};
 use tokio::sync::RwLock;
 
 #[derive(Parser, Debug)]
@@ -46,7 +46,13 @@ async fn main() {
     let clients = builder.cluster();
     let client_aggregator = builder.process();
 
-    simple_graphs_bench(num_clients_per_node, &server, &clients, &client_aggregator, graph_function);
+    simple_graphs_bench(
+        num_clients_per_node,
+        &server,
+        &clients,
+        &client_aggregator,
+        graph_function,
+    );
 
     let mut clusters = vec![
         (

@@ -33,45 +33,42 @@ impl PartialOrd for Story {
 /// - get_story_comments (takes story_id, returns the comments for that story)
 ///
 ///   Any call with an invalid API key (either it does not exist or does not have the privileges required) will not receive a response.
-#[expect(clippy::too_many_arguments, clippy::type_complexity, reason = "internal Lobsters code // TODO")]
+#[expect(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "internal Lobsters code // TODO"
+)]
 pub fn lobsters<'a, Client>(
     server: &Process<'a, Server>,
-    add_user: Stream<
-        (ClusterId<Client>, String),
+    add_user: Stream<(ClusterId<Client>, String), Process<'a, Server>, Unbounded, NoOrder>,
+    get_users: Stream<ClusterId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
+    add_story: Stream<
+        (ClusterId<Client>, (String, String, Instant)),
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
-    get_users: Stream<ClusterId<Client>,
+    _add_comment: Stream<
+        (ClusterId<Client>, (String, u32, String, Instant)),
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
-    add_story: Stream<(ClusterId<Client>, (String, String, Instant)), Process<'a, Server>, Unbounded, NoOrder>,
-    _add_comment: Stream<(ClusterId<Client>, (String, u32, String, Instant)), Process<'a, Server>, Unbounded, NoOrder>,
-    _upvote_story: Stream<(ClusterId<Client>, (String, u32)), Process<'a, Server>, Unbounded, NoOrder>,
+    _upvote_story: Stream<
+        (ClusterId<Client>, (String, u32)),
+        Process<'a, Server>,
+        Unbounded,
+        NoOrder,
+    >,
     _upvote_comment: Stream<
         (ClusterId<Client>, (String, u32)),
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
-    _get_stories: Stream<ClusterId<Client>,
-        Process<'a, Server>,
-        Unbounded,
-        NoOrder,
-    >,
-    _get_comments: Stream<ClusterId<Client>,
-        Process<'a, Server>,
-        Unbounded,
-        NoOrder,
-    >,
-    _get_story_comments: Stream<
-        (ClusterId<Client>, u32),
-        Process<'a, Server>,
-        Unbounded,
-        NoOrder,
-    >,
+    _get_stories: Stream<ClusterId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
+    _get_comments: Stream<ClusterId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
+    _get_story_comments: Stream<(ClusterId<Client>, u32), Process<'a, Server>, Unbounded, NoOrder>,
 ) {
     let user_auth_tick = server.tick();
     let stories_tick = server.tick();
@@ -81,7 +78,10 @@ pub fn lobsters<'a, Client>(
         let api_key = self::generate_api_key(username.clone());
         (client_id, (username, api_key))
     }));
-    let users_this_tick_with_api_key = unsafe { add_user_with_api_key.tick_batch(&user_auth_tick) };
+    let users_this_tick_with_api_key = add_user_with_api_key.batch(
+        &user_auth_tick,
+        nondet!(/** Snapshot current users to approve/deny access */),
+    );
     // Persisted users
     let curr_users = users_this_tick_with_api_key
         .clone()
@@ -95,27 +95,34 @@ pub fn lobsters<'a, Client>(
     );
     // Send response back to client. Only done after the tick to ensure that once the client gets the response, the user has been added
     let _add_user_response =
-        users_this_tick_with_api_key.all_ticks().map(q!(|(
-            client_id,
-            (_api_key, _username),
-        )| (client_id, ())));
+        users_this_tick_with_api_key
+            .all_ticks()
+            .map(q!(|(client_id, (_api_key, _username))| (client_id, ())));
 
     // Get users
-    let _get_users_response = unsafe { get_users.tick_batch(&user_auth_tick) }
+    let _get_users_response = get_users
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Snapshot against current users */),
+        )
         .cross_singleton(curr_users_hashset)
         .all_ticks();
 
     // Add story
-    let add_story_pre_join =
-        add_story.map(q!(|(client_id, (api_key, title, timestamp))| {
-            (api_key, (client_id, title, timestamp))
-        }));
-    let stories = unsafe { add_story_pre_join.tick_batch(&user_auth_tick) }
+    let add_story_pre_join = add_story.map(q!(|(client_id, (api_key, title, timestamp))| {
+        (api_key, (client_id, title, timestamp))
+    }));
+    let stories = add_story_pre_join
+        .batch(
+            &user_auth_tick,
+            nondet!(/** Compare against current users to approve/deny access */),
+        )
         .join(curr_users.clone())
         .all_ticks();
-    let curr_stories = unsafe { stories.tick_batch(&stories_tick).assume_ordering() };
+    let curr_stories = stories.batch(&stories_tick, nondet!(/** Snapshot of current stories */)).assume_ordering(nondet!(/** In order to use enumerate to assign a unique ID, we need total ordering. */));
     // Assign each story a unique ID
-    let (story_id_complete_cycle, story_id) = stories_tick.cycle_with_initial(stories_tick.singleton(q!(0)));
+    let (story_id_complete_cycle, story_id) =
+        stories_tick.cycle_with_initial(stories_tick.singleton(q!(0)));
     let _indexed_curr_stories = curr_stories
         .clone()
         .enumerate()
