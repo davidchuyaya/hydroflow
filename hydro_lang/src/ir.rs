@@ -21,6 +21,7 @@ use syn::parse_quote;
 use syn::visit::{self, Visit};
 use syn::visit_mut::VisitMut;
 
+use crate::NetworkHint;
 #[cfg(stageleft_runtime)]
 use crate::backtrace::Backtrace;
 #[cfg(feature = "build")]
@@ -104,17 +105,14 @@ impl VisitMut for QMacroSimplifier {
             return;
         }
 
-        if let syn::Expr::Call(call) = expr {
-            if let syn::Expr::Path(path_expr) = call.func.as_ref() {
-                // Look for calls to stageleft::runtime_support::fn*
-                if self.is_stageleft_runtime_support_call(&path_expr.path) {
-                    // Try to extract the closure from the arguments
-                    if let Some(closure) = self.extract_closure_from_args(&call.args) {
-                        self.simplified_result = Some(closure);
-                        return;
-                    }
-                }
-            }
+        if let syn::Expr::Call(call) = expr && let syn::Expr::Path(path_expr) = call.func.as_ref()
+            // Look for calls to stageleft::runtime_support::fn*
+            && self.is_stageleft_runtime_support_call(&path_expr.path)
+            // Try to extract the closure from the arguments
+            && let Some(closure) = self.extract_closure_from_args(&call.args)
+        {
+            self.simplified_result = Some(closure);
+            return;
         }
 
         // Continue visiting child expressions using the default implementation
@@ -185,19 +183,19 @@ impl<'ast> Visit<'ast> for ClosureFinder {
             syn::Expr::Block(block) if self.prefer_inner_blocks => {
                 // Special handling for blocks - look for inner blocks that contain closures
                 for stmt in &block.block.stmts {
-                    if let syn::Stmt::Expr(stmt_expr, _) = stmt {
-                        if let syn::Expr::Block(_) = stmt_expr {
-                            // Check if this nested block contains a closure
-                            let mut inner_visitor = ClosureFinder {
-                                found_closure: None,
-                                prefer_inner_blocks: false, // Avoid infinite recursion
-                            };
-                            inner_visitor.visit_expr(stmt_expr);
-                            if inner_visitor.found_closure.is_some() {
-                                // Found a closure in an inner block, return that block
-                                self.found_closure = Some(stmt_expr.clone());
-                                return;
-                            }
+                    if let syn::Stmt::Expr(stmt_expr, _) = stmt
+                        && let syn::Expr::Block(_) = stmt_expr
+                    {
+                        // Check if this nested block contains a closure
+                        let mut inner_visitor = ClosureFinder {
+                            found_closure: None,
+                            prefer_inner_blocks: false, // Avoid infinite recursion
+                        };
+                        inner_visitor.visit_expr(stmt_expr);
+                        if inner_visitor.found_closure.is_some() {
+                            // Found a closure in an inner block, return that block
+                            self.found_closure = Some(stmt_expr.clone());
+                            return;
                         }
                     }
                 }
@@ -328,9 +326,9 @@ pub enum HydroLeaf {
         metadata: HydroIrMetadata,
     },
     SendExternal {
-        from_key: Option<usize>,
-        to_location: usize,
-        to_key: Option<usize>,
+        to_external_id: usize,
+        to_key: usize,
+        to_many: bool,
         serialize_fn: Option<DebugExpr>,
         instantiate_fn: DebugInstantiate,
         input: Box<HydroNode>,
@@ -352,6 +350,7 @@ impl HydroLeaf {
     pub fn compile_network<'a, D>(
         &mut self,
         compile_env: &D::CompileEnv,
+        extra_stmts: &mut BTreeMap<usize, Vec<syn::Stmt>>,
         seen_tees: &mut SeenTees,
         processes: &HashMap<usize, D::Process>,
         clusters: &HashMap<usize, D::Cluster>,
@@ -363,24 +362,58 @@ impl HydroLeaf {
             &mut |l| {
                 if let HydroLeaf::SendExternal {
                     input,
-                    from_key,
-                    to_location,
+                    to_external_id,
                     to_key,
+                    to_many,
                     instantiate_fn,
                     ..
                 } = l
                 {
-                    let (sink_expr, source_expr, connect_fn) = match instantiate_fn {
-                        DebugInstantiate::Building => instantiate_network::<D>(
-                            input.metadata().location_kind.root(),
-                            *from_key,
-                            &LocationId::External(*to_location),
-                            *to_key,
-                            processes,
-                            clusters,
-                            externals,
-                            compile_env,
-                        ),
+                    let ((sink_expr, source_expr), connect_fn) = match instantiate_fn {
+                        DebugInstantiate::Building => {
+                            let to_node = externals
+                                .get(to_external_id)
+                                .unwrap_or_else(|| {
+                                    panic!("A external used in the graph was not instantiated: {}", to_external_id)
+                                })
+                                .clone();
+
+                            match input.metadata().location_kind.root() {
+                                LocationId::Process(process_id) => {
+                                    if *to_many {
+                                        (
+                                            (
+                                                D::e2o_many_sink(format!("{}_{}", *to_external_id, *to_key)),
+                                                parse_quote!(DUMMY),
+                                            ),
+                                            Box::new(|| {}) as Box<dyn FnOnce()>,
+                                        )
+                                    } else {
+                                        let from_node = processes
+                                            .get(process_id)
+                                            .unwrap_or_else(|| {
+                                                panic!("A process used in the graph was not instantiated: {}", process_id)
+                                            })
+                                            .clone();
+
+                                        let sink_port = D::allocate_process_port(&from_node);
+                                        let source_port = D::allocate_external_port(&to_node);
+
+                                        to_node.register(*to_key, source_port.clone());
+
+                                        (
+                                            (
+                                                D::o2e_sink(compile_env, &from_node, &sink_port, &to_node, &source_port),
+                                                parse_quote!(DUMMY),
+                                            ),
+                                            D::o2e_connect(&from_node, &sink_port, &to_node, &source_port),
+                                        )
+                                    }
+                                }
+                                LocationId::Cluster(_) => todo!(),
+                                _ => panic!()
+                            }
+                        },
 
                         DebugInstantiate::Finalized(_) => panic!("network already finalized"),
                     };
@@ -396,8 +429,6 @@ impl HydroLeaf {
             &mut |n| {
                 if let HydroNode::Network {
                     input,
-                    from_key,
-                    to_key,
                     instantiate_fn,
                     metadata,
                     ..
@@ -406,12 +437,9 @@ impl HydroLeaf {
                     let (sink_expr, source_expr, connect_fn) = match instantiate_fn {
                         DebugInstantiate::Building => instantiate_network::<D>(
                             input.metadata().location_kind.root(),
-                            *from_key,
                             metadata.location_kind.root(),
-                            *to_key,
                             processes,
                             clusters,
-                            externals,
                             compile_env,
                         ),
 
@@ -425,25 +453,64 @@ impl HydroLeaf {
                     }
                     .into();
                 } else if let HydroNode::ExternalInput {
-                    from_location,
+                    from_external_id,
                     from_key,
-                    to_key,
+                    from_many,
+                    codec_type,
+                    port_hint,
                     instantiate_fn,
                     metadata,
                     ..
                 } = n
                 {
-                    let (sink_expr, source_expr, connect_fn) = match instantiate_fn {
-                        DebugInstantiate::Building => instantiate_network::<D>(
-                            from_location,
-                            *from_key,
-                            &metadata.location_kind,
-                            *to_key,
-                            processes,
-                            clusters,
-                            externals,
-                            compile_env,
-                        ),
+                    let ((sink_expr, source_expr), connect_fn) = match instantiate_fn {
+                        DebugInstantiate::Building => {
+                            let from_node = externals
+                                .get(from_external_id)
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "A external used in the graph was not instantiated: {}",
+                                        from_external_id
+                                    )
+                                })
+                                .clone();
+
+                            match metadata.location_kind.root() {
+                                LocationId::Process(process_id) => {
+                                    let to_node = processes
+                                        .get(process_id)
+                                        .unwrap_or_else(|| {
+                                            panic!("A process used in the graph was not instantiated: {}", process_id)
+                                        })
+                                        .clone();
+
+                                    let sink_port = D::allocate_external_port(&from_node);
+                                    let source_port = D::allocate_process_port(&to_node);
+
+                                    from_node.register(*from_key, sink_port.clone());
+
+                                    (
+                                        (
+                                            parse_quote!(DUMMY),
+                                            if *from_many {
+                                                D::e2o_many_source(
+                                                    compile_env,
+                                                    extra_stmts.entry(*process_id).or_default(),
+                                                    &to_node, &source_port,
+                                                    codec_type.0.as_ref(),
+                                                    format!("{}_{}", *from_external_id, *from_key)
+                                                )
+                                            } else {
+                                                D::e2o_source(compile_env, &from_node, &sink_port, &to_node, &source_port)
+                                            },
+                                        ),
+                                        D::e2o_connect(&from_node, &sink_port, &to_node, &source_port, *from_many, *port_hint),
+                                    )
+                                }
+                                LocationId::Cluster(_) => todo!(),
+                                _ => panic!()
+                            }
+                        },
 
                         DebugInstantiate::Finalized(_) => panic!("network already finalized"),
                     };
@@ -513,12 +580,10 @@ impl HydroLeaf {
         seen_tees: &mut SeenTees,
     ) {
         match self {
-            HydroLeaf::ForEach { f: _, input, .. }
+            HydroLeaf::ForEach { input, .. }
             | HydroLeaf::SendExternal { input, .. }
-            | HydroLeaf::DestSink { sink: _, input, .. }
-            | HydroLeaf::CycleSink {
-                ident: _, input, ..
-            } => {
+            | HydroLeaf::DestSink { input, .. }
+            | HydroLeaf::CycleSink { input, .. } => {
                 transform(input, seen_tees);
             }
         }
@@ -532,16 +597,16 @@ impl HydroLeaf {
                 metadata: metadata.clone(),
             },
             HydroLeaf::SendExternal {
-                from_key,
-                to_location,
+                to_external_id,
                 to_key,
+                to_many,
                 serialize_fn,
                 instantiate_fn,
                 input,
             } => HydroLeaf::SendExternal {
-                from_key: *from_key,
-                to_location: *to_location,
+                to_external_id: *to_external_id,
                 to_key: *to_key,
+                to_many: *to_many,
                 serialize_fn: serialize_fn.clone(),
                 instantiate_fn: instantiate_fn.clone(),
                 input: Box::new(input.deep_clone(seen_tees)),
@@ -1079,10 +1144,14 @@ pub enum HydroNode {
         input: Box<HydroNode>,
         metadata: HydroIrMetadata,
     },
+    ReduceKeyedWatermark {
+        f: DebugExpr,
+        input: Box<HydroNode>,
+        watermark: Box<HydroNode>,
+        metadata: HydroIrMetadata,
+    },
 
     Network {
-        from_key: Option<usize>,
-        to_key: Option<usize>,
         serialize_fn: Option<DebugExpr>,
         instantiate_fn: DebugInstantiate,
         deserialize_fn: Option<DebugExpr>,
@@ -1091,9 +1160,11 @@ pub enum HydroNode {
     },
 
     ExternalInput {
-        from_location: LocationId,
-        from_key: Option<usize>,
-        to_key: Option<usize>,
+        from_external_id: usize,
+        from_key: usize,
+        from_many: bool,
+        codec_type: DebugType,
+        port_hint: NetworkHint,
         instantiate_fn: DebugInstantiate,
         deserialize_fn: Option<DebugExpr>,
         metadata: HydroIrMetadata,
@@ -1189,6 +1260,13 @@ impl HydroNode {
             HydroNode::Difference { pos, neg, .. } | HydroNode::AntiJoin { pos, neg, .. } => {
                 transform(pos.as_mut(), seen_tees);
                 transform(neg.as_mut(), seen_tees);
+            }
+
+            HydroNode::ReduceKeyedWatermark {
+                input, watermark, ..
+            } => {
+                transform(input.as_mut(), seen_tees);
+                transform(watermark.as_mut(), seen_tees);
             }
 
             HydroNode::Map { input, .. }
@@ -1389,6 +1467,17 @@ impl HydroNode {
                 input: Box::new(input.deep_clone(seen_tees)),
                 metadata: metadata.clone(),
             },
+            HydroNode::ReduceKeyedWatermark {
+                f,
+                input,
+                watermark,
+                metadata,
+            } => HydroNode::ReduceKeyedWatermark {
+                f: f.clone(),
+                input: Box::new(input.deep_clone(seen_tees)),
+                watermark: Box::new(watermark.deep_clone(seen_tees)),
+                metadata: metadata.clone(),
+            },
             HydroNode::Reduce { f, input, metadata } => HydroNode::Reduce {
                 f: f.clone(),
                 input: Box::new(input.deep_clone(seen_tees)),
@@ -1400,16 +1489,12 @@ impl HydroNode {
                 metadata: metadata.clone(),
             },
             HydroNode::Network {
-                from_key,
-                to_key,
                 serialize_fn,
                 instantiate_fn,
                 deserialize_fn,
                 input,
                 metadata,
             } => HydroNode::Network {
-                from_key: *from_key,
-                to_key: *to_key,
                 serialize_fn: serialize_fn.clone(),
                 instantiate_fn: instantiate_fn.clone(),
                 deserialize_fn: deserialize_fn.clone(),
@@ -1417,16 +1502,20 @@ impl HydroNode {
                 metadata: metadata.clone(),
             },
             HydroNode::ExternalInput {
-                from_location,
+                from_external_id,
                 from_key,
-                to_key,
+                from_many,
+                codec_type,
+                port_hint,
                 instantiate_fn,
                 deserialize_fn,
                 metadata,
             } => HydroNode::ExternalInput {
-                from_location: from_location.clone(),
+                from_external_id: *from_external_id,
                 from_key: *from_key,
-                to_key: *to_key,
+                from_many: *from_many,
+                codec_type: codec_type.clone(),
+                port_hint: *port_hint,
                 instantiate_fn: instantiate_fn.clone(),
                 deserialize_fn: deserialize_fn.clone(),
                 metadata: metadata.clone(),
@@ -1525,12 +1614,7 @@ impl HydroNode {
             HydroNode::Source {
                 source, metadata, ..
             } => {
-                let location_id = match metadata.location_kind.root().clone() {
-                    LocationId::Process(id) => id,
-                    LocationId::Cluster(id) => id,
-                    LocationId::Tick(_, _) => panic!(),
-                    LocationId::External(id) => id,
-                };
+                let location_id = metadata.location_kind.root().raw_id();
 
                 if let HydroSource::ExternalNetwork() = source {
                     (syn::Ident::new("DUMMY", Span::call_site()), location_id)
@@ -2214,6 +2298,101 @@ impl HydroNode {
                 (fold_ident, input_location_id)
             }
 
+            HydroNode::ReduceKeyedWatermark {
+                f,
+                input,
+                watermark,
+                ..
+            } => {
+                let (input, lifetime) =
+                    if let HydroNode::Persist { inner: input, .. } = input.as_mut() {
+                        (input, quote!('static))
+                    } else {
+                        (input, quote!('tick))
+                    };
+
+                let (input_ident, input_location_id) =
+                    input.emit_core(builders_or_callback, built_tees, next_stmt_id);
+
+                let (watermark_ident, watermark_location_id) =
+                    watermark.emit_core(builders_or_callback, built_tees, next_stmt_id);
+
+                let chain_ident = syn::Ident::new(
+                    &format!("reduce_keyed_watermark_chain_{}", *next_stmt_id),
+                    Span::call_site(),
+                );
+
+                let fold_ident =
+                    syn::Ident::new(&format!("stream_{}", *next_stmt_id), Span::call_site());
+
+                match builders_or_callback {
+                    BuildersOrCallback::Builders(graph_builders) => {
+                        assert_eq!(
+                            input_location_id, watermark_location_id,
+                            "ReduceKeyedWatermark inputs must be in the same location"
+                        );
+
+                        let builder = graph_builders.entry(input_location_id).or_default();
+                        // 1. Don't allow any values to be added to the map if the key <=the watermark
+                        // 2. If the entry didn't exist in the BTreeMap, add it. Otherwise, call f.
+                        //    If the watermark changed, delete all BTreeMap entries with a key < the watermark.
+                        // 3. Convert the BTreeMap back into a stream of (k, v)
+                        builder.add_dfir(
+                            parse_quote! {
+                                #chain_ident = chain();
+                                #input_ident
+                                    -> map(|x| (Some(x), None))
+                                    -> [0]#chain_ident;
+                                #watermark_ident
+                                    -> map(|watermark| (None, Some(watermark)))
+                                    -> [1]#chain_ident;
+
+                                #fold_ident = #chain_ident
+                                    -> fold::<#lifetime>(|| (::std::collections::HashMap::new(), None), {
+                                        let __reduce_keyed_fn = #f;
+                                        move |(map, opt_curr_watermark), (opt_payload, opt_watermark)| {
+                                            if let Some((k, v)) = opt_payload {
+                                                if let Some(curr_watermark) = *opt_curr_watermark {
+                                                    if k <= curr_watermark {
+                                                        return;
+                                                    }
+                                                }
+                                                match map.entry(k) {
+                                                    ::std::collections::hash_map::Entry::Vacant(e) => {
+                                                        e.insert(v);
+                                                    }
+                                                    ::std::collections::hash_map::Entry::Occupied(mut e) => {
+                                                        __reduce_keyed_fn(e.get_mut(), v);
+                                                    }
+                                                }
+                                            } else {
+                                                let watermark = opt_watermark.unwrap();
+                                                if let Some(curr_watermark) = *opt_curr_watermark {
+                                                    if watermark <= curr_watermark {
+                                                        return;
+                                                    }
+                                                }
+                                                *opt_curr_watermark = opt_watermark;
+                                                map.retain(|k, _| *k > watermark);
+                                            }
+                                        }
+                                    })
+                                    -> flat_map(|(map, _curr_watermark)| map);
+                            },
+                            None,
+                            Some(&next_stmt_id.to_string()),
+                        );
+                    }
+                    BuildersOrCallback::Callback(_, node_callback) => {
+                        node_callback(self, next_stmt_id);
+                    }
+                }
+
+                *next_stmt_id += 1;
+
+                (fold_ident, input_location_id)
+            }
+
             HydroNode::Reduce { .. } | HydroNode::ReduceKeyed { .. } => {
                 let operator: syn::Ident = if matches!(self, HydroNode::Reduce { .. }) {
                     parse_quote!(reduce)
@@ -2262,8 +2441,6 @@ impl HydroNode {
             }
 
             HydroNode::Network {
-                from_key: _,
-                to_key: _,
                 serialize_fn: serialize_pipeline,
                 instantiate_fn,
                 deserialize_fn: deserialize_pipeline,
@@ -2338,8 +2515,6 @@ impl HydroNode {
             }
 
             HydroNode::ExternalInput {
-                from_key: _,
-                to_key: _,
                 instantiate_fn,
                 deserialize_fn: deserialize_pipeline,
                 metadata,
@@ -2455,7 +2630,8 @@ impl HydroNode {
             | HydroNode::FilterMap { f, .. }
             | HydroNode::Inspect { f, .. }
             | HydroNode::Reduce { f, .. }
-            | HydroNode::ReduceKeyed { f, .. } => {
+            | HydroNode::ReduceKeyed { f, .. }
+            | HydroNode::ReduceKeyedWatermark { f, .. } => {
                 transform(f);
             }
             HydroNode::Fold { init, acc, .. }
@@ -2520,6 +2696,7 @@ impl HydroNode {
             HydroNode::FoldKeyed { metadata, .. } => metadata,
             HydroNode::Reduce { metadata, .. } => metadata,
             HydroNode::ReduceKeyed { metadata, .. } => metadata,
+            HydroNode::ReduceKeyedWatermark { metadata, .. } => metadata,
             HydroNode::ExternalInput { metadata, .. } => metadata,
             HydroNode::Network { metadata, .. } => metadata,
             HydroNode::Counter { metadata, .. } => metadata,
@@ -2559,6 +2736,7 @@ impl HydroNode {
             HydroNode::FoldKeyed { metadata, .. } => metadata,
             HydroNode::Reduce { metadata, .. } => metadata,
             HydroNode::ReduceKeyed { metadata, .. } => metadata,
+            HydroNode::ReduceKeyedWatermark { metadata, .. } => metadata,
             HydroNode::ExternalInput { metadata, .. } => metadata,
             HydroNode::Network { metadata, .. } => metadata,
             HydroNode::Counter { metadata, .. } => metadata,
@@ -2619,6 +2797,14 @@ impl HydroNode {
                     vec![input.metadata()]
                 }
             }
+            HydroNode::ReduceKeyedWatermark { input, watermark, .. } => {
+                // Skip persist before fold/reduce
+                if let HydroNode::Persist { inner, .. } = input.as_ref() {
+                    vec![inner.metadata(), watermark.metadata()]
+                } else {
+                    vec![input.metadata(), watermark.metadata()]
+                }
+            }
         }
     }
 
@@ -2675,6 +2861,7 @@ impl HydroNode {
             HydroNode::FoldKeyed { init, acc, .. } => format!("FoldKeyed({:?}, {:?})", init, acc),
             HydroNode::Reduce { f, .. } => format!("Reduce({:?})", f),
             HydroNode::ReduceKeyed { f, .. } => format!("ReduceKeyed({:?})", f),
+            HydroNode::ReduceKeyedWatermark { f, .. } => format!("ReduceKeyedWatermark({:?})", f),
             HydroNode::Network { .. } => "Network()".to_string(),
             HydroNode::ExternalInput { .. } => "ExternalInput()".to_string(),
             HydroNode::Counter { tag, duration, .. } => {
@@ -2685,15 +2872,11 @@ impl HydroNode {
 }
 
 #[cfg(feature = "build")]
-#[expect(clippy::too_many_arguments, reason = "networking internals")]
 fn instantiate_network<'a, D>(
     from_location: &LocationId,
-    from_key: Option<usize>,
     to_location: &LocationId,
-    to_key: Option<usize>,
     processes: &HashMap<usize, D::Process>,
     clusters: &HashMap<usize, D::Cluster>,
-    externals: &HashMap<usize, D::External>,
     compile_env: &D::CompileEnv,
 ) -> (syn::Expr, syn::Expr, Box<dyn FnOnce()>)
 where
@@ -2788,74 +2971,6 @@ where
                 D::m2m_connect(&from_node, &sink_port, &to_node, &source_port),
             )
         }
-        (LocationId::External(from), LocationId::Process(to)) => {
-            let from_node = externals
-                .get(from)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "A external used in the graph was not instantiated: {}",
-                        from
-                    )
-                })
-                .clone();
-
-            let to_node = processes
-                .get(to)
-                .unwrap_or_else(|| {
-                    panic!("A process used in the graph was not instantiated: {}", to)
-                })
-                .clone();
-
-            let sink_port = D::allocate_external_port(&from_node);
-            let source_port = D::allocate_process_port(&to_node);
-
-            from_node.register(from_key.unwrap(), sink_port.clone());
-
-            (
-                (
-                    parse_quote!(DUMMY),
-                    D::e2o_source(compile_env, &from_node, &sink_port, &to_node, &source_port),
-                ),
-                D::e2o_connect(&from_node, &sink_port, &to_node, &source_port),
-            )
-        }
-        (LocationId::External(_from), LocationId::Cluster(_to)) => {
-            todo!("NYI")
-        }
-        (LocationId::External(_), LocationId::External(_)) => {
-            panic!("Cannot send from external to external")
-        }
-        (LocationId::Process(from), LocationId::External(to)) => {
-            let from_node = processes
-                .get(from)
-                .unwrap_or_else(|| {
-                    panic!("A process used in the graph was not instantiated: {}", from)
-                })
-                .clone();
-
-            let to_node = externals
-                .get(to)
-                .unwrap_or_else(|| {
-                    panic!("A external used in the graph was not instantiated: {}", to)
-                })
-                .clone();
-
-            let sink_port = D::allocate_process_port(&from_node);
-            let source_port = D::allocate_external_port(&to_node);
-
-            to_node.register(to_key.unwrap(), source_port.clone());
-
-            (
-                (
-                    D::o2e_sink(compile_env, &from_node, &sink_port, &to_node, &source_port),
-                    parse_quote!(DUMMY),
-                ),
-                D::o2e_connect(&from_node, &sink_port, &to_node, &source_port),
-            )
-        }
-        (LocationId::Cluster(_from), LocationId::External(_to)) => {
-            todo!("NYI")
-        }
         (LocationId::Tick(_, _), _) => panic!(),
         (_, LocationId::Tick(_, _)) => panic!(),
     };
@@ -2872,7 +2987,7 @@ mod test {
 
     #[test]
     fn hydro_node_size() {
-        insta::assert_snapshot!(size_of::<HydroNode>(), @"232");
+        insta::assert_snapshot!(size_of::<HydroNode>(), @"208");
     }
 
     #[test]

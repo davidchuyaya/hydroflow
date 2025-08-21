@@ -120,8 +120,6 @@ fn persist_pullup_node(
             },
 
             HydroNode::Network {
-                from_key,
-                to_key,
                 serialize_fn,
                 instantiate_fn,
                 deserialize_fn,
@@ -129,8 +127,6 @@ fn persist_pullup_node(
                 metadata,
             } => HydroNode::Persist {
                 inner: Box::new(HydroNode::Network {
-                    from_key,
-                    to_key,
                     serialize_fn,
                     instantiate_fn,
                     deserialize_fn,
@@ -213,6 +209,7 @@ mod tests {
 
     use crate::deploy::HydroDeploy;
     use crate::location::Location;
+    use crate::nondet;
 
     #[test]
     fn persist_pullup_through_map() {
@@ -248,7 +245,10 @@ mod tests {
         let process = flow.process::<()>();
 
         let tick = process.tick();
-        let before_tee = unsafe { process.source_iter(q!(0..10)).tick_batch(&tick).persist() };
+        let before_tee = process
+            .source_iter(q!(0..10))
+            .batch(&tick, nondet!(/** test */))
+            .persist();
 
         before_tee
             .clone()

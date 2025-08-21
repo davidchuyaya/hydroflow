@@ -8,7 +8,7 @@ use hydro_lang::ir::{
     transform_bottom_up, traverse_dfir,
 };
 use hydro_lang::location::LocationId;
-use hydro_lang::stream::{deserialize_bincode_with_type, serialize_bincode_with_type};
+use hydro_lang::stream::networking::{deserialize_bincode_with_type, serialize_bincode_with_type};
 use proc_macro2::Span;
 use serde::{Deserialize, Serialize};
 use stageleft::quote_type;
@@ -61,8 +61,6 @@ fn add_network(node: &mut HydroNode, new_location: &LocationId) {
     // Set up the network node
     let output_type = output_debug_type.clone().0;
     let network_node = HydroNode::Network {
-        from_key: None,
-        to_key: None,
         serialize_fn: Some(serialize_bincode_with_type(true, &output_type)).map(|e| e.into()),
         instantiate_fn: DebugInstantiate::Building,
         deserialize_fn: Some(deserialize_bincode_with_type(
@@ -208,12 +206,11 @@ fn fix_cluster_self_id_leaf(leaf: &mut HydroLeaf, mut locations: ClusterSelfIdRe
         decoupled_cluster_id,
         ..
     } = locations
+        && leaf.metadata().location_kind.root().raw_id() == decoupled_cluster_id
     {
-        if leaf.metadata().location_kind.root().raw_id() == decoupled_cluster_id {
-            leaf.visit_debug_expr(|expr| {
-                locations.visit_expr_mut(&mut expr.0);
-            });
-        }
+        leaf.visit_debug_expr(|expr| {
+            locations.visit_expr_mut(&mut expr.0);
+        });
     }
 }
 
@@ -222,12 +219,11 @@ fn fix_cluster_self_id_node(node: &mut HydroNode, mut locations: ClusterSelfIdRe
         decoupled_cluster_id,
         ..
     } = locations
+        && node.metadata().location_kind.root().raw_id() == decoupled_cluster_id
     {
-        if node.metadata().location_kind.root().raw_id() == decoupled_cluster_id {
-            node.visit_debug_expr(|expr| {
-                locations.visit_expr_mut(&mut expr.0);
-            });
-        }
+        node.visit_debug_expr(|expr| {
+            locations.visit_expr_mut(&mut expr.0);
+        });
     }
 }
 
@@ -292,7 +288,8 @@ mod tests {
         send_cluster
             .source_iter(q!(0..10))
             .map(q!(|a| a + 1))
-            .broadcast_bincode_anonymous(&recv_cluster)
+            .broadcast_bincode(&recv_cluster)
+            .values()
             .for_each(q!(|a| println!("Got it: {}", a)));
 
         let decoupled_cluster = builder.cluster::<()>();

@@ -1,27 +1,26 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use bytes::Bytes;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use stageleft::{IntoQuotedMut, QuotedWithContext, q};
 use syn::parse_quote;
 use tokio::time::Instant;
 
 use crate::builder::FLOW_USED_MESSAGE;
 use crate::cycle::{CycleCollection, CycleComplete, DeferTick, ForwardRefMarker, TickCycleMarker};
-use crate::ir::{DebugInstantiate, HydroLeaf, HydroNode, TeeNode};
-use crate::location::external_process::{ExternalBincodeStream, ExternalBytesPort};
+use crate::ir::{HydroLeaf, HydroNode, TeeNode};
+use crate::keyed_stream::KeyedStream;
 use crate::location::tick::{Atomic, NoAtomic};
-use crate::location::{
-    CanSend, External, Location, LocationId, NoTick, Tick, check_matching_location,
-};
-use crate::staging_util::get_this_crate;
-use crate::{Bounded, Cluster, ClusterId, Optional, Singleton, Unbounded};
+use crate::location::{Location, LocationId, NoTick, Tick, check_matching_location};
+use crate::manual_expr::ManualExpr;
+use crate::unsafety::NonDet;
+use crate::*;
+
+pub mod networking;
 
 /// Marks the stream as being totally ordered, which means that there are
 /// no sources of non-determinism (other than intentional ones) that will
@@ -84,7 +83,7 @@ impl MinRetries<ExactlyOnce> for AtLeastOnce {
 
 #[sealed::sealed]
 impl MinRetries<AtLeastOnce> for ExactlyOnce {
-    type Min = ExactlyOnce;
+    type Min = AtLeastOnce;
 }
 
 /// An ordered sequence stream of elements of type `T`.
@@ -97,7 +96,7 @@ impl MinRetries<AtLeastOnce> for ExactlyOnce {
 /// - `Order`: the ordering of the stream, which is either [`TotalOrder`]
 ///   or [`NoOrder`] (default is [`TotalOrder`])
 pub struct Stream<Type, Loc, Bound, Order = TotalOrder, Retries = ExactlyOnce> {
-    location: Loc,
+    pub(crate) location: Loc,
     pub(crate) ir_node: RefCell<HydroNode>,
 
     _phantom: PhantomData<(Type, Loc, Bound, Order, Retries)>,
@@ -287,7 +286,7 @@ impl<'a, T, L, B, O, R> Stream<T, L, B, O, R>
 where
     L: Location<'a>,
 {
-    /// Produces a stream based on invoking `f` on each element in order.
+    /// Produces a stream based on invoking `f` on each element.
     /// If you do not want to modify the stream and instead only want to view
     /// each item use [`Stream::inspect`] instead.
     ///
@@ -534,11 +533,9 @@ where
     /// # use futures::StreamExt;
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
-    /// let batch = unsafe {
-    ///     process
-    ///         .source_iter(q!(vec![1, 2, 3, 4]))
-    ///         .tick_batch(&tick)
-    /// };
+    /// let batch = process
+    ///   .source_iter(q!(vec![1, 2, 3, 4]))
+    ///   .batch(&tick, nondet!(/** test */));
     /// let count = batch.clone().count(); // `count()` returns a singleton
     /// batch.cross_singleton(count).all_ticks()
     /// # }, |mut stream| async move {
@@ -595,13 +592,13 @@ where
     /// # let expected = HashSet::from([('a', 1), ('b', 1), ('c', 1), ('a', 2), ('b', 2), ('c', 2), ('a', 3), ('b', 3), ('c', 3)]);
     /// # stream.map(|i| assert!(expected.contains(&i)));
     /// # }));
-    pub fn cross_product<O2>(
+    pub fn cross_product<T2, O2>(
         self,
-        other: Stream<O2, L, B, O, R>,
-    ) -> Stream<(T, O2), L, B, NoOrder, R>
+        other: Stream<T2, L, B, O2, R>,
+    ) -> Stream<(T, T2), L, B, NoOrder, R>
     where
         T: Clone,
-        O2: Clone,
+        T2: Clone,
     {
         check_matching_location(&self.location, &other.location);
 
@@ -610,7 +607,7 @@ where
             HydroNode::CrossProduct {
                 left: Box::new(self.ir_node.into_inner()),
                 right: Box::new(other.ir_node.into_inner()),
-                metadata: self.location.new_node_metadata::<(T, O2)>(),
+                metadata: self.location.new_node_metadata::<(T, T2)>(),
             },
         )
     }
@@ -653,16 +650,12 @@ where
     /// # use futures::StreamExt;
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
-    /// let stream = unsafe {
-    ///    process
-    ///    .source_iter(q!(vec![ 1, 2, 3, 4 ]))
-    ///    .tick_batch(&tick)
-    /// };
-    /// let batch = unsafe {
-    ///     process
-    ///         .source_iter(q!(vec![1, 2]))
-    ///         .tick_batch(&tick)
-    /// };
+    /// let stream = process
+    ///   .source_iter(q!(vec![ 1, 2, 3, 4 ]))
+    ///   .batch(&tick, nondet!(/** test */));
+    /// let batch = process
+    ///   .source_iter(q!(vec![1, 2]))
+    ///   .batch(&tick, nondet!(/** test */));
     /// stream.filter_not_in(batch).all_ticks()
     /// # }, |mut stream| async move {
     /// # for w in vec![3, 4] {
@@ -743,56 +736,62 @@ where
     /// guarantee. Useful in unsafe code where the ordering cannot be proven
     /// by the type-system.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// This function is used as an escape hatch, and any mistakes in the
     /// provided ordering guarantee will propagate into the guarantees
     /// for the rest of the program.
-    ///
-    /// # Example
-    /// # TODO: more sensible code after Shadaj merges
-    /// ```rust
-    /// # use hydro_lang::*;
-    /// # use std::collections::HashSet;
-    /// # use futures::StreamExt;
-    /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
-    /// let nums = process.source_iter(q!({
-    ///     let now = std::time::SystemTime::now();
-    ///     match now.elapsed().unwrap().as_secs() % 2 {
-    ///         0 => vec![5, 4, 3, 2, 1],
-    ///         _ => vec![1, 2, 3, 4, 5],
-    ///     }
-    ///     .into_iter()
-    /// }));
-    /// // despite being generated by `source_iter`, the order of `nums` across runs is non-deterministic
-    /// let stream = unsafe { nums.assume_ordering::<NoOrder>() };
-    /// stream
-    /// # }, |mut stream| async move {
-    /// # for w in vec![1, 2, 3, 4, 5] {
-    /// #     assert!((1..=5).contains(&stream.next().await.unwrap()));
-    /// # }
-    /// # }));
-    /// ```
-    pub unsafe fn assume_ordering<O2>(self) -> Stream<T, L, B, O2, R> {
+    pub fn assume_ordering<O2>(self, _nondet: NonDet) -> Stream<T, L, B, O2, R> {
         Stream::new(self.location, self.ir_node.into_inner())
+    }
+
+    /// Weakens the ordering guarantee provided by the stream to [`NoOrder`],
+    /// which is always safe because that is the weakest possible guarantee.
+    pub fn weakest_ordering(self) -> Stream<T, L, B, NoOrder, R> {
+        let nondet = nondet!(/** this is a weaker odering guarantee, so it is safe to assume */);
+        self.assume_ordering::<NoOrder>(nondet)
     }
 
     /// Explicitly "casts" the stream to a type with a different retries
     /// guarantee. Useful in unsafe code where the lack of retries cannot
     /// be proven by the type-system.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// This function is used as an escape hatch, and any mistakes in the
     /// provided retries guarantee will propagate into the guarantees
     /// for the rest of the program.
-    pub unsafe fn assume_retries<R2>(self) -> Stream<T, L, B, O, R2> {
+    pub fn assume_retries<R2>(self, _nondet: NonDet) -> Stream<T, L, B, O, R2> {
         Stream::new(self.location, self.ir_node.into_inner())
     }
 
+    /// Weakens the retries guarantee provided by the stream to [`AtLeastOnce`],
+    /// which is always safe because that is the weakest possible guarantee.
     pub fn weakest_retries(self) -> Stream<T, L, B, O, AtLeastOnce> {
-        unsafe {
-            // SAFETY: this is a weaker retry guarantee, so it is safe to assume
-            self.assume_retries::<AtLeastOnce>()
-        }
+        let nondet = nondet!(/** this is a weaker retry guarantee, so it is safe to assume */);
+        self.assume_retries::<AtLeastOnce>(nondet)
+    }
+
+    /// Weakens the retries guarantee provided by the stream to be the weaker of the
+    /// current guarantee and `R2`. This is safe because the output guarantee will
+    /// always be weaker than the input.
+    pub fn weaken_retries<R2>(self) -> Stream<T, L, B, O, <R as MinRetries<R2>>::Min>
+    where
+        R: MinRetries<R2>,
+    {
+        let nondet = nondet!(/** this is a weaker retry guarantee, so it is safe to assume */);
+        self.assume_retries::<<R as MinRetries<R2>>::Min>(nondet)
+    }
+}
+
+impl<'a, T, L, B, O> Stream<T, L, B, O, ExactlyOnce>
+where
+    L: Location<'a>,
+{
+    /// Given a stream with [`ExactlyOnce`] retry guarantees, weakens it to an arbitrary guarantee
+    /// `R2`, which is safe because all guarantees are equal to or weaker than [`ExactlyOnce`]
+    pub fn weaker_retries<R2>(self) -> Stream<T, L, B, O, R2> {
+        self.assume_retries(
+            nondet!(/** any retry ordering is the same or weaker than ExactlyOnce */),
+        )
     }
 }
 
@@ -841,7 +840,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let bools = process.source_iter(q!(vec![false, true, false]));
-    /// let batch = unsafe { bools.tick_batch(&tick) };
+    /// let batch = bools.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .fold_commutative_idempotent(q!(|| false), q!(|acc, x| *acc |= x))
     ///     .all_ticks()
@@ -859,11 +858,10 @@ where
         I: Fn() -> A + 'a,
         F: Fn(&mut A, T),
     {
-        unsafe {
-            // SAFETY: the combinator function is commutative and idempotent
-            self.assume_ordering().assume_retries()
-        }
-        .fold(init, comb)
+        let nondet = nondet!(/** the combinator function is commutative and idempotent */);
+        self.assume_ordering(nondet)
+            .assume_retries(nondet)
+            .fold(init, comb)
     }
 
     /// Combines elements of the stream into an [`Optional`], by starting with the first element in the stream,
@@ -881,7 +879,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let bools = process.source_iter(q!(vec![false, true, false]));
-    /// let batch = unsafe { bools.tick_batch(&tick) };
+    /// let batch = bools.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .reduce_commutative_idempotent(q!(|acc, x| *acc |= x))
     ///     .all_ticks()
@@ -897,11 +895,10 @@ where
     where
         F: Fn(&mut T, T) + 'a,
     {
-        unsafe {
-            // SAFETY: the combinator function is commutative and idempotent
-            self.assume_ordering().assume_retries()
-        }
-        .reduce(comb)
+        let nondet = nondet!(/** the combinator function is commutative and idempotent */);
+        self.assume_ordering(nondet)
+            .assume_retries(nondet)
+            .reduce(comb)
     }
 
     /// Computes the maximum element in the stream as an [`Optional`], which
@@ -914,7 +911,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch.max().all_ticks()
     /// # }, |mut stream| async move {
     /// // 4
@@ -943,7 +940,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch.max_by_key(q!(|x| -x)).all_ticks()
     /// # }, |mut stream| async move {
     /// // 1
@@ -992,7 +989,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch.min().all_ticks()
     /// # }, |mut stream| async move {
     /// // 1
@@ -1028,7 +1025,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .fold_commutative(q!(|| 0), q!(|acc, x| *acc += x))
     ///     .all_ticks()
@@ -1046,11 +1043,8 @@ where
         I: Fn() -> A + 'a,
         F: Fn(&mut A, T),
     {
-        unsafe {
-            // SAFETY: the combinator function is commutative
-            self.assume_ordering()
-        }
-        .fold(init, comb)
+        let nondet = nondet!(/** the combinator function is commutative */);
+        self.assume_ordering(nondet).fold(init, comb)
     }
 
     /// Combines elements of the stream into a [`Optional`], by starting with the first element in the stream,
@@ -1067,7 +1061,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .reduce_commutative(q!(|curr, new| *curr += new))
     ///     .all_ticks()
@@ -1080,11 +1074,8 @@ where
     where
         F: Fn(&mut T, T) + 'a,
     {
-        unsafe {
-            // SAFETY: the combinator function is commutative
-            self.assume_ordering()
-        }
-        .reduce(comb)
+        let nondet = nondet!(/** the combinator function is commutative */);
+        self.assume_ordering(nondet).reduce(comb)
     }
 
     /// Computes the number of elements in the stream as a [`Singleton`].
@@ -1096,7 +1087,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch.count().all_ticks()
     /// # }, |mut stream| async move {
     /// // 4
@@ -1125,7 +1116,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let bools = process.source_iter(q!(vec![false, true, false]));
-    /// let batch = unsafe { bools.tick_batch(&tick) };
+    /// let batch = bools.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .fold_idempotent(q!(|| false), q!(|acc, x| *acc |= x))
     ///     .all_ticks()
@@ -1143,11 +1134,8 @@ where
         I: Fn() -> A + 'a,
         F: Fn(&mut A, T),
     {
-        unsafe {
-            // SAFETY: the combinator function is idempotent
-            self.assume_retries()
-        }
-        .fold(init, comb)
+        let nondet = nondet!(/** the combinator function is idempotent */);
+        self.assume_retries(nondet).fold(init, comb)
     }
 
     /// Combines elements of the stream into an [`Optional`], by starting with the first element in the stream,
@@ -1164,7 +1152,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let bools = process.source_iter(q!(vec![false, true, false]));
-    /// let batch = unsafe { bools.tick_batch(&tick) };
+    /// let batch = bools.batch(&tick, nondet!(/** test */));
     /// batch.reduce_idempotent(q!(|acc, x| *acc |= x)).all_ticks()
     /// # }, |mut stream| async move {
     /// // true
@@ -1175,11 +1163,56 @@ where
     where
         F: Fn(&mut T, T) + 'a,
     {
-        unsafe {
-            // SAFETY: the combinator function is idempotent
-            self.assume_retries()
-        }
-        .reduce(comb)
+        let nondet = nondet!(/** the combinator function is idempotent */);
+        self.assume_retries(nondet).reduce(comb)
+    }
+
+    /// Computes the first element in the stream as an [`Optional`], which
+    /// will be empty until the first element in the input arrives.
+    ///
+    /// This requires the stream to have a [`TotalOrder`] guarantee, otherwise
+    /// re-ordering of elements may cause the first element to change.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use hydro_lang::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
+    /// batch.first().all_ticks()
+    /// # }, |mut stream| async move {
+    /// // 1
+    /// # assert_eq!(stream.next().await.unwrap(), 1);
+    /// # }));
+    /// ```
+    pub fn first(self) -> Optional<T, L, B> {
+        self.reduce_idempotent(q!(|_, _| {}))
+    }
+
+    /// Computes the last element in the stream as an [`Optional`], which
+    /// will be empty until an element in the input arrives.
+    ///
+    /// This requires the stream to have a [`TotalOrder`] guarantee, otherwise
+    /// re-ordering of elements may cause the last element to change.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use hydro_lang::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
+    /// batch.last().all_ticks()
+    /// # }, |mut stream| async move {
+    /// // 4
+    /// # assert_eq!(stream.next().await.unwrap(), 4);
+    /// # }));
+    /// ```
+    pub fn last(self) -> Optional<T, L, B> {
+        self.reduce_idempotent(q!(|curr, new| *curr = new))
     }
 }
 
@@ -1232,54 +1265,6 @@ where
         }
     }
 
-    /// Computes the first element in the stream as an [`Optional`], which
-    /// will be empty until the first element in the input arrives.
-    ///
-    /// This requires the stream to have a [`TotalOrder`] guarantee, otherwise
-    /// re-ordering of elements may cause the first element to change.
-    ///
-    /// # Example
-    /// ```rust
-    /// # use hydro_lang::*;
-    /// # use futures::StreamExt;
-    /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
-    /// let tick = process.tick();
-    /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
-    /// batch.first().all_ticks()
-    /// # }, |mut stream| async move {
-    /// // 1
-    /// # assert_eq!(stream.next().await.unwrap(), 1);
-    /// # }));
-    /// ```
-    pub fn first(self) -> Optional<T, L, B> {
-        self.reduce(q!(|_, _| {}))
-    }
-
-    /// Computes the last element in the stream as an [`Optional`], which
-    /// will be empty until an element in the input arrives.
-    ///
-    /// This requires the stream to have a [`TotalOrder`] guarantee, otherwise
-    /// re-ordering of elements may cause the last element to change.
-    ///
-    /// # Example
-    /// ```rust
-    /// # use hydro_lang::*;
-    /// # use futures::StreamExt;
-    /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
-    /// let tick = process.tick();
-    /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
-    /// batch.last().all_ticks()
-    /// # }, |mut stream| async move {
-    /// // 4
-    /// # assert_eq!(stream.next().await.unwrap(), 4);
-    /// # }));
-    /// ```
-    pub fn last(self) -> Optional<T, L, B> {
-        self.reduce(q!(|curr, new| *curr = new))
-    }
-
     /// Combines elements of the stream into a [`Singleton`], by starting with an intitial value,
     /// generated by the `init` closure, and then applying the `comb` closure to each element in the stream.
     /// Unlike iterators, `comb` takes the accumulator by `&mut` reference, so that it can be modified in place.
@@ -1294,7 +1279,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let words = process.source_iter(q!(vec!["HELLO", "WORLD"]));
-    /// let batch = unsafe { words.tick_batch(&tick) };
+    /// let batch = words.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .fold(q!(|| String::new()), q!(|acc, x| acc.push_str(x)))
     ///     .all_ticks()
@@ -1442,7 +1427,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let words = process.source_iter(q!(vec!["HELLO", "WORLD"]));
-    /// let batch = unsafe { words.tick_batch(&tick) };
+    /// let batch = words.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .map(q!(|x| x.to_string()))
     ///     .reduce(q!(|curr, new| curr.push_str(&new)))
@@ -1487,7 +1472,7 @@ impl<'a, T, L: Location<'a> + NoTick + NoAtomic, O, R> Stream<T, L, Unbounded, O
     /// # use futures::StreamExt;
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// numbers.clone().map(q!(|x| x + 1)).union(numbers)
+    /// numbers.clone().map(q!(|x| x + 1)).interleave(numbers)
     /// # }, |mut stream| async move {
     /// // 2, 3, 4, 5, and 1, 2, 3, 4 interleaved in unknown order
     /// # for w in vec![2, 3, 4, 5, 1, 2, 3, 4] {
@@ -1495,26 +1480,26 @@ impl<'a, T, L: Location<'a> + NoTick + NoAtomic, O, R> Stream<T, L, Unbounded, O
     /// # }
     /// # }));
     /// ```
-    pub fn union<O2, R2: MinRetries<R>>(
+    pub fn interleave<O2, R2: MinRetries<R>>(
         self,
         other: Stream<T, L, Unbounded, O2, R2>,
-    ) -> Stream<T, L, Unbounded, NoOrder, R2::Min> {
+    ) -> Stream<T, L, Unbounded, NoOrder, R::Min>
+    where
+        R: MinRetries<R2, Min = R2::Min>,
+    {
         let tick = self.location.tick();
-        unsafe {
-            // SAFETY: Because the outputs are unordered,
-            // we can interleave batches from both streams.
-            self.tick_batch(&tick)
-                .assume_ordering::<NoOrder>()
-                .assume_retries::<R2::Min>()
-                .chain(
-                    other
-                        .tick_batch(&tick)
-                        .assume_ordering::<NoOrder>()
-                        .assume_retries::<R2::Min>(),
-                )
-                .all_ticks()
-                .assume_ordering()
-        }
+        // Because the outputs are unordered, we can interleave batches from both streams.
+        let nondet_batch_interleaving = nondet!(/** output stream is NoOrder, can interleave */);
+        self.batch(&tick, nondet_batch_interleaving)
+            .weakest_ordering()
+            .weaken_retries::<R2>()
+            .chain(
+                other
+                    .batch(&tick, nondet_batch_interleaving)
+                    .weakest_ordering()
+                    .weaken_retries::<R>(),
+            )
+            .all_ticks()
     }
 }
 
@@ -1536,7 +1521,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![4, 2, 3, 1]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch.sort().all_ticks()
     /// # }, |mut stream| async move {
     /// // 1, 2, 3, 4
@@ -1574,7 +1559,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![1, 2, 3, 4]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch.clone().map(q!(|x| x + 1)).chain(batch).all_ticks()
     /// # }, |mut stream| async move {
     /// // 2, 3, 4, 5, 1, 2, 3, 4
@@ -1652,23 +1637,19 @@ where
     /// # use futures::StreamExt;
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
-    /// let stream = unsafe {
-    ///    process
-    ///    .source_iter(q!(vec![ (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd') ]))
-    ///    .tick_batch(&tick)
-    /// };
-    /// let batch = unsafe {
-    ///     process
-    ///         .source_iter(q!(vec![1, 2]))
-    ///         .tick_batch(&tick)
-    /// };
+    /// let stream = process
+    ///   .source_iter(q!(vec![ (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd') ]))
+    ///   .batch(&tick, nondet!(/** test */));
+    /// let batch = process
+    ///   .source_iter(q!(vec![1, 2]))
+    ///   .batch(&tick, nondet!(/** test */));
     /// stream.anti_join(batch).all_ticks()
     /// # }, |mut stream| async move {
     /// # for w in vec![(3, 'c'), (4, 'd')] {
     /// #     assert_eq!(stream.next().await.unwrap(), w);
     /// # }
     /// # }));
-    pub fn anti_join<O2>(self, n: Stream<K, L, Bounded, O2, R>) -> Stream<(K, V1), L, B, O, R>
+    pub fn anti_join<O2, R2>(self, n: Stream<K, L, Bounded, O2, R2>) -> Stream<(K, V1), L, B, O, R>
     where
         K: Eq + Hash,
     {
@@ -1685,11 +1666,140 @@ where
     }
 }
 
+impl<'a, K, V, L: Location<'a>, B, O, R> Stream<(K, V), L, B, O, R> {
+    pub fn into_keyed(self) -> KeyedStream<K, V, L, B, O, R> {
+        KeyedStream {
+            underlying: self.weakest_ordering(),
+            _phantom_order: Default::default(),
+        }
+    }
+}
+
+impl<'a, K, V, L, B> Stream<(K, V), L, B, TotalOrder, ExactlyOnce>
+where
+    K: Eq + Hash,
+    L: Location<'a>,
+{
+    /// A special case of [`Stream::scan`], in the spirit of SQL's GROUP BY and aggregation constructs. The input
+    /// tuples are partitioned into groups by the first element ("keys"), and for each group the values
+    /// in the second element are transformed via the `f` combinator.
+    ///
+    /// Unlike [`Stream::fold_keyed`] which only returns the final accumulated value, `scan` produces a new stream
+    /// containing all intermediate accumulated values paired with the key. The scan operation can also terminate
+    /// early by returning `None`.
+    ///
+    /// The function takes a mutable reference to the accumulator and the current element, and returns
+    /// an `Option<U>`. If the function returns `Some(value)`, `value` is emitted to the output stream.
+    /// If the function returns `None`, the stream is terminated and no more elements are processed.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use hydro_lang::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
+    /// process
+    ///     .source_iter(q!(vec![(0, 1), (0, 2), (1, 3), (1, 4)]))
+    ///     .scan_keyed(
+    ///         q!(|| 0),
+    ///         q!(|acc, x| {
+    ///             *acc += x;
+    ///             Some(*acc)
+    ///         }),
+    ///     )
+    /// # }, |mut stream| async move {
+    /// // Output: (0, 1), (0, 3), (1, 3), (1, 7)
+    /// # for w in vec![(0, 1), (0, 3), (1, 3), (1, 7)] {
+    /// #     assert_eq!(stream.next().await.unwrap(), w);
+    /// # }
+    /// # }));
+    /// ```
+    pub fn scan_keyed<A, U, I, F>(
+        self,
+        init: impl IntoQuotedMut<'a, I, L> + Copy,
+        f: impl IntoQuotedMut<'a, F, L> + Copy,
+    ) -> Stream<(K, U), L, B, TotalOrder, ExactlyOnce>
+    where
+        K: Clone,
+        I: Fn() -> A + 'a,
+        F: Fn(&mut A, V) -> Option<U> + 'a,
+    {
+        let init: ManualExpr<I, _> = ManualExpr::new(move |ctx: &L| init.splice_fn0_ctx(ctx));
+        let f: ManualExpr<F, _> = ManualExpr::new(move |ctx: &L| f.splice_fn2_borrow_mut_ctx(ctx));
+        self.scan(
+            q!(|| HashMap::new()),
+            q!(move |acc, (k, v)| {
+                let existing_state = acc.entry(k.clone()).or_insert_with(&init);
+                if let Some(out) = f(existing_state, v) {
+                    Some(Some((k, out)))
+                } else {
+                    acc.remove(&k);
+                    Some(None)
+                }
+            }),
+        )
+        .flatten_ordered()
+    }
+
+    /// Like [`Stream::fold_keyed`], in the spirit of SQL's GROUP BY and aggregation constructs. But the aggregation
+    /// function returns a boolean, which when true indicates that the aggregated result is complete and can be
+    /// released to downstream computation. Unlike [`Stream::fold_keyed`], this means that even if the input stream
+    /// is [`Unbounded`], the outputs of the fold can be processed like normal stream elements.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use hydro_lang::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
+    /// process
+    ///     .source_iter(q!(vec![(0, 2), (0, 3), (1, 3), (1, 6)]))
+    ///     .fold_keyed_early_stop(
+    ///         q!(|| 0),
+    ///         q!(|acc, x| {
+    ///             *acc += x;
+    ///             x % 2 == 0
+    ///         }),
+    ///     )
+    /// # }, |mut stream| async move {
+    /// // Output: (0, 2), (1, 9)
+    /// # for w in vec![(0, 2), (1, 9)] {
+    /// #     assert_eq!(stream.next().await.unwrap(), w);
+    /// # }
+    /// # }));
+    /// ```
+    pub fn fold_keyed_early_stop<A, I, F>(
+        self,
+        init: impl IntoQuotedMut<'a, I, L> + Copy,
+        f: impl IntoQuotedMut<'a, F, L> + Copy,
+    ) -> Stream<(K, A), L, B, TotalOrder, ExactlyOnce>
+    where
+        K: Clone,
+        I: Fn() -> A + 'a,
+        F: Fn(&mut A, V) -> bool + 'a,
+    {
+        let init: ManualExpr<I, _> = ManualExpr::new(move |ctx: &L| init.splice_fn0_ctx(ctx));
+        let f: ManualExpr<F, _> = ManualExpr::new(move |ctx: &L| f.splice_fn2_borrow_mut_ctx(ctx));
+        self.scan(
+            q!(|| HashMap::new()),
+            q!(move |acc, (k, v)| {
+                let existing_state = acc.entry(k.clone()).or_insert_with(&init);
+                if f(existing_state, v) {
+                    let out = acc.remove(&k).unwrap();
+                    Some(Some((k, out)))
+                } else {
+                    Some(None)
+                }
+            }),
+        )
+        .flatten_ordered()
+    }
+}
+
 impl<'a, K, V, L> Stream<(K, V), Tick<L>, Bounded, TotalOrder, ExactlyOnce>
 where
     K: Eq + Hash,
     L: Location<'a>,
 {
+    #[deprecated = "use .into_keyed().fold(...) instead"]
     /// A special case of [`Stream::fold`], in the spirit of SQL's GROUP BY and aggregation constructs. The input
     /// tuples are partitioned into groups by the first element ("keys"), and for each group the values
     /// in the second element are accumulated via the `comb` closure.
@@ -1707,7 +1817,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, 2), (2, 3), (1, 3), (2, 4)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .fold_keyed(q!(|| 0), q!(|acc, x| *acc += x))
     ///     .all_ticks()
@@ -1726,20 +1836,10 @@ where
         I: Fn() -> A + 'a,
         F: Fn(&mut A, V) + 'a,
     {
-        let init = init.splice_fn0_ctx(&self.location).into();
-        let comb = comb.splice_fn2_borrow_mut_ctx(&self.location).into();
-
-        Stream::new(
-            self.location.clone(),
-            HydroNode::FoldKeyed {
-                init,
-                acc: comb,
-                input: Box::new(self.ir_node.into_inner()),
-                metadata: self.location.new_node_metadata::<(K, A)>(),
-            },
-        )
+        self.into_keyed().fold(init, comb).entries()
     }
 
+    #[deprecated = "use .into_keyed().reduce(...) instead"]
     /// A special case of [`Stream::reduce`], in the spirit of SQL's GROUP BY and aggregation constructs. The input
     /// tuples are partitioned into groups by the first element ("keys"), and for each group the values
     /// in the second element are accumulated via the `comb` closure.
@@ -1756,7 +1856,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, 2), (2, 3), (1, 3), (2, 4)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch.reduce_keyed(q!(|acc, x| *acc += x)).all_ticks()
     /// # }, |mut stream| async move {
     /// // (1, 5), (2, 7)
@@ -1789,6 +1889,7 @@ where
     K: Eq + Hash,
     L: Location<'a>,
 {
+    #[deprecated = "use .into_keyed().fold_commutative_idempotent(...) instead"]
     /// A special case of [`Stream::fold_commutative_idempotent`], in the spirit of SQL's GROUP BY and aggregation constructs.
     /// The input tuples are partitioned into groups by the first element ("keys"), and for each group the values
     /// in the second element are accumulated via the `comb` closure.
@@ -1806,7 +1907,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, false), (2, true), (1, false), (2, false)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .fold_keyed_commutative_idempotent(q!(|| false), q!(|acc, x| *acc |= x))
     ///     .all_ticks()
@@ -1825,11 +1926,9 @@ where
         I: Fn() -> A + 'a,
         F: Fn(&mut A, V) + 'a,
     {
-        unsafe {
-            // SAFETY: aggregation is commutative and idempotent
-            self.assume_ordering().assume_retries()
-        }
-        .fold_keyed(init, comb)
+        self.into_keyed()
+            .fold_commutative_idempotent(init, comb)
+            .entries()
     }
 
     /// Given a stream of pairs `(K, V)`, produces a new stream of unique keys `K`.
@@ -1840,7 +1939,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, 2), (2, 3), (1, 3), (2, 4)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch.keys().all_ticks()
     /// # }, |mut stream| async move {
     /// // 1, 2
@@ -1849,10 +1948,12 @@ where
     /// # }));
     /// ```
     pub fn keys(self) -> Stream<K, Tick<L>, Bounded, NoOrder, ExactlyOnce> {
-        self.fold_keyed_commutative_idempotent(q!(|| ()), q!(|_, _| {}))
-            .map(q!(|(k, _)| k))
+        self.into_keyed()
+            .fold_commutative_idempotent(q!(|| ()), q!(|_, _| {}))
+            .keys()
     }
 
+    #[deprecated = "use .into_keyed().reduce_commutative_idempotent(...) instead"]
     /// A special case of [`Stream::reduce_commutative_idempotent`], in the spirit of SQL's GROUP BY and aggregation constructs.
     /// The input tuples are partitioned into groups by the first element ("keys"), and for each group the values
     /// in the second element are accumulated via the `comb` closure.
@@ -1869,7 +1970,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, false), (2, true), (1, false), (2, false)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .reduce_keyed_commutative_idempotent(q!(|acc, x| *acc |= x))
     ///     .all_ticks()
@@ -1886,11 +1987,9 @@ where
     where
         F: Fn(&mut V, V) + 'a,
     {
-        unsafe {
-            // SAFETY: aggregation is commutative and idempotent
-            self.assume_ordering().assume_retries()
-        }
-        .reduce_keyed(comb)
+        self.into_keyed()
+            .reduce_commutative_idempotent(comb)
+            .entries()
     }
 }
 
@@ -1899,6 +1998,7 @@ where
     K: Eq + Hash,
     L: Location<'a>,
 {
+    #[deprecated = "use .into_keyed().fold_commutative(...) instead"]
     /// A special case of [`Stream::fold_commutative`], in the spirit of SQL's GROUP BY and aggregation constructs. The input
     /// tuples are partitioned into groups by the first element ("keys"), and for each group the values
     /// in the second element are accumulated via the `comb` closure.
@@ -1915,7 +2015,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, 2), (2, 3), (1, 3), (2, 4)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .fold_keyed_commutative(q!(|| 0), q!(|acc, x| *acc += x))
     ///     .all_ticks()
@@ -1934,13 +2034,10 @@ where
         I: Fn() -> A + 'a,
         F: Fn(&mut A, V) + 'a,
     {
-        unsafe {
-            // SAFETY: aggregation is commutative
-            self.assume_ordering()
-        }
-        .fold_keyed(init, comb)
+        self.into_keyed().fold_commutative(init, comb).entries()
     }
 
+    #[deprecated = "use .into_keyed().reduce_commutative(...) instead"]
     /// A special case of [`Stream::reduce_commutative`], in the spirit of SQL's GROUP BY and aggregation constructs. The input
     /// tuples are partitioned into groups by the first element ("keys"), and for each group the values
     /// in the second element are accumulated via the `comb` closure.
@@ -1956,7 +2053,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, 2), (2, 3), (1, 3), (2, 4)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .reduce_keyed_commutative(q!(|acc, x| *acc += x))
     ///     .all_ticks()
@@ -1973,11 +2070,7 @@ where
     where
         F: Fn(&mut V, V) + 'a,
     {
-        unsafe {
-            // SAFETY: aggregation is commutative
-            self.assume_ordering()
-        }
-        .reduce_keyed(comb)
+        self.into_keyed().reduce_commutative(comb).entries()
     }
 }
 
@@ -1986,6 +2079,7 @@ where
     K: Eq + Hash,
     L: Location<'a>,
 {
+    #[deprecated = "use .into_keyed().fold_idempotent(...) instead"]
     /// A special case of [`Stream::fold_idempotent`], in the spirit of SQL's GROUP BY and aggregation constructs.
     /// The input tuples are partitioned into groups by the first element ("keys"), and for each group the values
     /// in the second element are accumulated via the `comb` closure.
@@ -2002,7 +2096,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, false), (2, true), (1, false), (2, false)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .fold_keyed_idempotent(q!(|| false), q!(|acc, x| *acc |= x))
     ///     .all_ticks()
@@ -2021,13 +2115,10 @@ where
         I: Fn() -> A + 'a,
         F: Fn(&mut A, V) + 'a,
     {
-        unsafe {
-            // SAFETY: aggregation is idempotent
-            self.assume_retries()
-        }
-        .fold_keyed(init, comb)
+        self.into_keyed().fold_idempotent(init, comb).entries()
     }
 
+    #[deprecated = "use .into_keyed().reduce_idempotent(...) instead"]
     /// A special case of [`Stream::reduce_idempotent`], in the spirit of SQL's GROUP BY and aggregation constructs.
     /// The input tuples are partitioned into groups by the first element ("keys"), and for each group the values
     /// in the second element are accumulated via the `comb` closure.
@@ -2043,7 +2134,7 @@ where
     /// # tokio_test::block_on(test_util::stream_transform_test(|process| {
     /// let tick = process.tick();
     /// let numbers = process.source_iter(q!(vec![(1, false), (2, true), (1, false), (2, false)]));
-    /// let batch = unsafe { numbers.tick_batch(&tick) };
+    /// let batch = numbers.batch(&tick, nondet!(/** test */));
     /// batch
     ///     .reduce_keyed_idempotent(q!(|acc, x| *acc |= x))
     ///     .all_ticks()
@@ -2060,11 +2151,7 @@ where
     where
         F: Fn(&mut V, V) + 'a,
     {
-        unsafe {
-            // SAFETY: aggregation is idempotent
-            self.assume_retries()
-        }
-        .reduce_keyed(comb)
+        self.into_keyed().reduce_idempotent(comb).entries()
     }
 }
 
@@ -2076,9 +2163,9 @@ where
     /// processed. These batches are guaranteed to be contiguous across ticks and preserve
     /// the order of the input.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// The batch boundaries are non-deterministic and may change across executions.
-    pub unsafe fn tick_batch(self) -> Stream<T, Tick<L>, Bounded, O, R> {
+    pub fn batch(self, _nondet: NonDet) -> Stream<T, Tick<L>, Bounded, O, R> {
         Stream::new(
             self.location.clone().tick,
             HydroNode::Unpersist {
@@ -2150,10 +2237,10 @@ where
     /// that tick. These batches are guaranteed to be contiguous across ticks and preserve
     /// the order of the input.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// The batch boundaries are non-deterministic and may change across executions.
-    pub unsafe fn tick_batch(self, tick: &Tick<L>) -> Stream<T, Tick<L>, Bounded, O, R> {
-        unsafe { self.atomic(tick).tick_batch() }
+    pub fn batch(self, tick: &Tick<L>, nondet: NonDet) -> Stream<T, Tick<L>, Bounded, O, R> {
+        self.atomic(tick).batch(nondet)
     }
 
     /// Given a time interval, returns a stream corresponding to samples taken from the
@@ -2161,66 +2248,60 @@ where
     /// as the input, but with arbitrary elements skipped between samples. There is also
     /// no guarantee on the exact timing of the samples.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// The output stream is non-deterministic in which elements are sampled, since this
     /// is controlled by a clock.
-    pub unsafe fn sample_every(
+    pub fn sample_every(
         self,
         interval: impl QuotedWithContext<'a, std::time::Duration, L> + Copy + 'a,
+        nondet: NonDet,
     ) -> Stream<T, L, Unbounded, O, AtLeastOnce> {
-        let samples = unsafe {
-            // SAFETY: source of intentional non-determinism
-            self.location.source_interval(interval)
-        };
+        let samples = self.location.source_interval(interval, nondet);
 
         let tick = self.location.tick();
-        unsafe {
-            // SAFETY: source of intentional non-determinism
-            self.tick_batch(&tick)
-                .continue_if(samples.tick_batch(&tick).first())
-                .all_ticks()
-                .weakest_retries()
-        }
+        self.batch(&tick, nondet)
+            .continue_if(samples.batch(&tick, nondet).first())
+            .all_ticks()
+            .weakest_retries()
     }
 
     /// Given a timeout duration, returns an [`Optional`]  which will have a value if the
     /// stream has not emitted a value since that duration.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// Timeout relies on non-deterministic sampling of the stream, so depending on when
     /// samples take place, timeouts may be non-deterministically generated or missed,
     /// and the notification of the timeout may be delayed as well. There is also no
     /// guarantee on how long the [`Optional`] will have a value after the timeout is
     /// detected based on when the next sample is taken.
-    pub unsafe fn timeout(
+    pub fn timeout(
         self,
         duration: impl QuotedWithContext<'a, std::time::Duration, Tick<L>> + Copy + 'a,
+        nondet: NonDet,
     ) -> Optional<(), L, Unbounded> {
         let tick = self.location.tick();
 
-        let latest_received = unsafe { self.assume_retries() }.fold_commutative(
+        let latest_received = self.assume_retries(nondet).fold_commutative(
             q!(|| None),
             q!(|latest, _| {
                 *latest = Some(Instant::now());
             }),
         );
 
-        unsafe {
-            // SAFETY: Non-deterministic delay in detecting a timeout is expected.
-            latest_received.latest_tick(&tick)
-        }
-        .filter_map(q!(move |latest_received| {
-            if let Some(latest_received) = latest_received {
-                if Instant::now().duration_since(latest_received) > duration {
-                    Some(())
+        latest_received
+            .snapshot(&tick, nondet)
+            .filter_map(q!(move |latest_received| {
+                if let Some(latest_received) = latest_received {
+                    if Instant::now().duration_since(latest_received) > duration {
+                        Some(())
+                    } else {
+                        None
+                    }
                 } else {
-                    None
+                    Some(())
                 }
-            } else {
-                Some(())
-            }
-        }))
-        .latest()
+            }))
+            .latest()
     }
 }
 
@@ -2366,398 +2447,6 @@ where
                 metadata: self.location.new_node_metadata::<T>(),
             },
         )
-    }
-}
-
-pub fn serialize_bincode_with_type(is_demux: bool, t_type: &syn::Type) -> syn::Expr {
-    let root = get_this_crate();
-
-    if is_demux {
-        parse_quote! {
-            ::#root::runtime_support::stageleft::runtime_support::fn1_type_hint::<(#root::ClusterId<_>, #t_type), _>(
-                |(id, data)| {
-                    (id.raw_id, #root::runtime_support::bincode::serialize(&data).unwrap().into())
-                }
-            )
-        }
-    } else {
-        parse_quote! {
-            ::#root::runtime_support::stageleft::runtime_support::fn1_type_hint::<#t_type, _>(
-                |data| {
-                    #root::runtime_support::bincode::serialize(&data).unwrap().into()
-                }
-            )
-        }
-    }
-}
-
-fn serialize_bincode<T: Serialize>(is_demux: bool) -> syn::Expr {
-    serialize_bincode_with_type(is_demux, &stageleft::quote_type::<T>())
-}
-
-pub fn deserialize_bincode_with_type(tagged: Option<&syn::Type>, t_type: &syn::Type) -> syn::Expr {
-    let root = get_this_crate();
-
-    if let Some(c_type) = tagged {
-        parse_quote! {
-            |res| {
-                let (id, b) = res.unwrap();
-                (#root::ClusterId::<#c_type>::from_raw(id), #root::runtime_support::bincode::deserialize::<#t_type>(&b).unwrap())
-            }
-        }
-    } else {
-        parse_quote! {
-            |res| {
-                #root::runtime_support::bincode::deserialize::<#t_type>(&res.unwrap()).unwrap()
-            }
-        }
-    }
-}
-
-pub(super) fn deserialize_bincode<T: DeserializeOwned>(tagged: Option<&syn::Type>) -> syn::Expr {
-    deserialize_bincode_with_type(tagged, &stageleft::quote_type::<T>())
-}
-
-impl<'a, T, L, B, O, R> Stream<T, L, B, O, R>
-where
-    L: Location<'a> + NoTick,
-{
-    #[expect(
-        clippy::type_complexity,
-        reason = "Complex signatures for CanSend trait"
-    )]
-    pub fn send_bincode<L2, CoreType>(
-        self,
-        other: &L2,
-    ) -> Stream<<L::Root as CanSend<'a, L2>>::Out<CoreType>, L2, Unbounded, O::Min, R>
-    where
-        L::Root: CanSend<'a, L2, In<CoreType> = T>,
-        L2: Location<'a>,
-        CoreType: Serialize + DeserializeOwned,
-        O: MinOrder<<L::Root as CanSend<'a, L2>>::OutStrongestOrder<O>>,
-    {
-        let serialize_pipeline = Some(serialize_bincode::<CoreType>(L::Root::is_demux()));
-
-        let deserialize_pipeline = Some(deserialize_bincode::<CoreType>(
-            L::Root::tagged_type().as_ref(),
-        ));
-
-        Stream::new(
-            other.clone(),
-            HydroNode::Network {
-                from_key: None,
-                to_key: None,
-                serialize_fn: serialize_pipeline.map(|e| e.into()),
-                instantiate_fn: DebugInstantiate::Building,
-                deserialize_fn: deserialize_pipeline.map(|e| e.into()),
-                input: Box::new(self.ir_node.into_inner()),
-                metadata: other.new_node_metadata::<CoreType>(),
-            },
-        )
-    }
-
-    pub fn send_bincode_external<L2, CoreType>(
-        self,
-        other: &External<L2>,
-    ) -> ExternalBincodeStream<L::Out<CoreType>>
-    where
-        L: CanSend<'a, External<'a, L2>, In<CoreType> = T, Out<CoreType> = CoreType>,
-        L2: 'a,
-        CoreType: Serialize + DeserializeOwned,
-        // for now, we restirct Out<CoreType> to be CoreType, which means no tagged cluster -> external
-    {
-        let serialize_pipeline = Some(serialize_bincode::<CoreType>(L::is_demux()));
-
-        let mut flow_state_borrow = self.location.flow_state().borrow_mut();
-
-        let external_key = flow_state_borrow.next_external_out;
-        flow_state_borrow.next_external_out += 1;
-
-        let leaves = flow_state_borrow.leaves.as_mut().expect("Attempted to add a leaf to a flow that has already been finalized. No leaves can be added after the flow has been compiled()");
-
-        leaves.push(HydroLeaf::SendExternal {
-            from_key: None,
-            to_location: other.id,
-            to_key: Some(external_key),
-            serialize_fn: serialize_pipeline.map(|e| e.into()),
-            instantiate_fn: DebugInstantiate::Building,
-            input: Box::new(HydroNode::Unpersist {
-                inner: Box::new(self.ir_node.into_inner()),
-                metadata: self.location.new_node_metadata::<T>(),
-            }),
-        });
-
-        ExternalBincodeStream {
-            process_id: other.id,
-            port_id: external_key,
-            _phantom: PhantomData,
-        }
-    }
-
-    #[expect(
-        clippy::type_complexity,
-        reason = "Complex signatures for CanSend trait"
-    )]
-    pub fn send_bytes<L2>(
-        self,
-        other: &L2,
-    ) -> Stream<<L::Root as CanSend<'a, L2>>::Out<Bytes>, L2, Unbounded, O::Min, R>
-    where
-        L2: Location<'a>,
-        L::Root: CanSend<'a, L2, In<Bytes> = T>,
-        O: MinOrder<<L::Root as CanSend<'a, L2>>::OutStrongestOrder<O>>,
-    {
-        let root = get_this_crate();
-        Stream::new(
-            other.clone(),
-            HydroNode::Network {
-                from_key: None,
-                to_key: None,
-                serialize_fn: None,
-                instantiate_fn: DebugInstantiate::Building,
-                deserialize_fn: if let Some(c_type) = L::Root::tagged_type() {
-                    let expr: syn::Expr = parse_quote!(|(id, b)| (#root::ClusterId<#c_type>::from_raw(id), b.unwrap().freeze()));
-                    Some(expr.into())
-                } else {
-                    let expr: syn::Expr = parse_quote!(|b| b.unwrap().freeze());
-                    Some(expr.into())
-                },
-                input: Box::new(self.ir_node.into_inner()),
-                metadata: other.new_node_metadata::<Bytes>(),
-            },
-        )
-    }
-
-    pub fn send_bytes_external<L2>(self, other: &External<L2>) -> ExternalBytesPort
-    where
-        L2: 'a,
-        L::Root: CanSend<'a, External<'a, L2>, In<Bytes> = T, Out<Bytes> = Bytes>,
-    {
-        let mut flow_state_borrow = self.location.flow_state().borrow_mut();
-        let external_key = flow_state_borrow.next_external_out;
-        flow_state_borrow.next_external_out += 1;
-
-        let leaves = flow_state_borrow.leaves.as_mut().expect("Attempted to add a leaf to a flow that has already been finalized. No leaves can be added after the flow has been compiled()");
-
-        leaves.push(HydroLeaf::SendExternal {
-            from_key: None,
-            to_location: other.id,
-            to_key: Some(external_key),
-            serialize_fn: None,
-            instantiate_fn: DebugInstantiate::Building,
-            input: Box::new(HydroNode::Unpersist {
-                inner: Box::new(self.ir_node.into_inner()),
-                metadata: self.location.new_node_metadata::<T>(),
-            }),
-        });
-
-        ExternalBytesPort {
-            process_id: other.id,
-            port_id: external_key,
-        }
-    }
-
-    pub fn send_bincode_anonymous<L2, Tag, CoreType>(
-        self,
-        other: &L2,
-    ) -> Stream<CoreType, L2, Unbounded, O::Min, R>
-    where
-        L2: Location<'a>,
-        L::Root: CanSend<'a, L2, In<CoreType> = T, Out<CoreType> = (Tag, CoreType)>,
-        CoreType: Serialize + DeserializeOwned,
-        O: MinOrder<<L::Root as CanSend<'a, L2>>::OutStrongestOrder<O>>,
-    {
-        self.send_bincode::<L2, CoreType>(other).map(q!(|(_, b)| b))
-    }
-
-    pub fn send_bytes_anonymous<L2, Tag>(
-        self,
-        other: &L2,
-    ) -> Stream<Bytes, L2, Unbounded, O::Min, R>
-    where
-        L2: Location<'a>,
-        L::Root: CanSend<'a, L2, In<Bytes> = T, Out<Bytes> = (Tag, Bytes)>,
-        O: MinOrder<<L::Root as CanSend<'a, L2>>::OutStrongestOrder<O>>,
-    {
-        self.send_bytes::<L2>(other).map(q!(|(_, b)| b))
-    }
-
-    #[expect(clippy::type_complexity, reason = "ordering semantics for broadcast")]
-    pub fn broadcast_bincode<C2>(
-        self,
-        other: &Cluster<'a, C2>,
-    ) -> Stream<
-        <L::Root as CanSend<'a, Cluster<'a, C2>>>::Out<T>,
-        Cluster<'a, C2>,
-        Unbounded,
-        O::Min,
-        R,
-    >
-    where
-        C2: 'a,
-        L::Root: CanSend<'a, Cluster<'a, C2>, In<T> = (ClusterId<C2>, T)>,
-        T: Clone + Serialize + DeserializeOwned,
-        O: MinOrder<<L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<O>>,
-    {
-        let ids = other.members();
-        self.flat_map_ordered(q!(|v| { ids.iter().map(move |id| (*id, v.clone())) }))
-            .send_bincode(other)
-    }
-
-    pub fn broadcast_bincode_anonymous<C2, Tag>(
-        self,
-        other: &Cluster<'a, C2>,
-    ) -> Stream<T, Cluster<'a, C2>, Unbounded, O::Min, R>
-    where
-        C2: 'a,
-        L::Root: CanSend<'a, Cluster<'a, C2>, In<T> = (ClusterId<C2>, T), Out<T> = (Tag, T)>,
-        T: Clone + Serialize + DeserializeOwned,
-        O: MinOrder<<L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<O>>,
-    {
-        self.broadcast_bincode(other).map(q!(|(_, b)| b))
-    }
-
-    #[expect(clippy::type_complexity, reason = "ordering semantics for broadcast")]
-    pub fn broadcast_bytes<C2>(
-        self,
-        other: &Cluster<'a, C2>,
-    ) -> Stream<
-        <L::Root as CanSend<'a, Cluster<'a, C2>>>::Out<Bytes>,
-        Cluster<'a, C2>,
-        Unbounded,
-        O::Min,
-        R,
-    >
-    where
-        C2: 'a,
-        L::Root: CanSend<'a, Cluster<'a, C2>, In<Bytes> = (ClusterId<C2>, T)>,
-        T: Clone,
-        O: MinOrder<<L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<O>>,
-    {
-        let ids = other.members();
-
-        self.flat_map_ordered(q!(|b| ids.iter().map(move |id| (
-            ::std::clone::Clone::clone(id),
-            ::std::clone::Clone::clone(&b)
-        ))))
-        .send_bytes(other)
-    }
-
-    pub fn broadcast_bytes_anonymous<C2, Tag>(
-        self,
-        other: &Cluster<'a, C2>,
-    ) -> Stream<Bytes, Cluster<'a, C2>, Unbounded, O::Min, R>
-    where
-        C2: 'a,
-        L::Root: CanSend<'a, Cluster<'a, C2>, In<Bytes> = (ClusterId<C2>, T), Out<Bytes> = (Tag, Bytes)>
-            + 'a,
-        T: Clone,
-        O: MinOrder<<L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<O>>,
-    {
-        self.broadcast_bytes(other).map(q!(|(_, b)| b))
-    }
-}
-
-#[expect(clippy::type_complexity, reason = "ordering semantics for round-robin")]
-impl<'a, T, L, B> Stream<T, L, B, TotalOrder, ExactlyOnce>
-where
-    L: Location<'a> + NoTick,
-{
-    pub fn round_robin_bincode<C2>(
-        self,
-        other: &Cluster<'a, C2>,
-    ) -> Stream<
-        <L::Root as CanSend<'a, Cluster<'a, C2>>>::Out<T>,
-        Cluster<'a, C2>,
-        Unbounded,
-        <TotalOrder as MinOrder<
-            <L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<TotalOrder>,
-        >>::Min,
-        ExactlyOnce,
-    >
-    where
-        C2: 'a,
-        L::Root: CanSend<'a, Cluster<'a, C2>, In<T> = (ClusterId<C2>, T)>,
-        T: Clone + Serialize + DeserializeOwned,
-        TotalOrder:
-            MinOrder<<L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<TotalOrder>>,
-    {
-        let ids = other.members();
-
-        self.enumerate()
-            .map(q!(|(i, w)| (ids[i % ids.len()], w)))
-            .send_bincode(other)
-    }
-
-    pub fn round_robin_bincode_anonymous<C2, Tag>(
-        self,
-        other: &Cluster<'a, C2>,
-    ) -> Stream<
-        T,
-        Cluster<'a, C2>,
-        Unbounded,
-        <TotalOrder as MinOrder<
-            <L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<TotalOrder>,
-        >>::Min,
-        ExactlyOnce,
-    >
-    where
-        C2: 'a,
-        L::Root: CanSend<'a, Cluster<'a, C2>, In<T> = (ClusterId<C2>, T), Out<T> = (Tag, T)> + 'a,
-        T: Clone + Serialize + DeserializeOwned,
-        TotalOrder:
-            MinOrder<<L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<TotalOrder>>,
-    {
-        self.round_robin_bincode(other).map(q!(|(_, b)| b))
-    }
-
-    pub fn round_robin_bytes<C2>(
-        self,
-        other: &Cluster<'a, C2>,
-    ) -> Stream<
-        <L::Root as CanSend<'a, Cluster<'a, C2>>>::Out<Bytes>,
-        Cluster<'a, C2>,
-        Unbounded,
-        <TotalOrder as MinOrder<
-            <L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<TotalOrder>,
-        >>::Min,
-        ExactlyOnce,
-    >
-    where
-        C2: 'a,
-        L::Root: CanSend<'a, Cluster<'a, C2>, In<Bytes> = (ClusterId<C2>, T)> + 'a,
-        T: Clone,
-        TotalOrder:
-            MinOrder<<L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<TotalOrder>>,
-    {
-        let ids = other.members();
-
-        self.enumerate()
-            .map(q!(|(i, w)| (ids[i % ids.len()], w)))
-            .send_bytes(other)
-    }
-
-    pub fn round_robin_bytes_anonymous<C2, Tag>(
-        self,
-        other: &Cluster<'a, C2>,
-    ) -> Stream<
-        Bytes,
-        Cluster<'a, C2>,
-        Unbounded,
-        <TotalOrder as MinOrder<
-            <L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<TotalOrder>,
-        >>::Min,
-        ExactlyOnce,
-    >
-    where
-        C2: 'a,
-        L::Root: CanSend<'a, Cluster<'a, C2>, In<Bytes> = (ClusterId<C2>, T), Out<Bytes> = (Tag, Bytes)>
-            + 'a,
-        T: Clone,
-        TotalOrder:
-            MinOrder<<L::Root as CanSend<'a, Cluster<'a, C2>>>::OutStrongestOrder<TotalOrder>>,
-    {
-        self.round_robin_bytes(other).map(q!(|(_, b)| b))
     }
 }
 

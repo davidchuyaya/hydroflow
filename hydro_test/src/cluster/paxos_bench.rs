@@ -30,15 +30,19 @@ pub fn paxos_bench<'a>(
         let (acceptor_checkpoint_complete, acceptor_checkpoint) =
             acceptors.forward_ref::<Optional<_, _, _>>();
 
-        let sequenced_payloads = unsafe {
-            // SAFETY: clients "own" certain keys, so interleaving elements from clients will not affect
-            // the order of writes to the same key
-
+        let sequenced_payloads = paxos.with_client(
+            clients,
+            payloads,
+            acceptor_checkpoint,
             // TODO(shadaj): we should retry when a payload is dropped due to stale leader
-            paxos.with_client(clients, payloads, acceptor_checkpoint)
-        };
+            nondet!(/** benchmarking, assuming no re-election */),
+            nondet!(
+                /// clients 'own' certain keys, so interleaving elements from clients will not affect
+                /// the order of writes to the same key
+            ),
+        );
 
-        let sequenced_to_replicas = sequenced_payloads.broadcast_bincode_anonymous(replicas);
+        let sequenced_to_replicas = sequenced_payloads.broadcast_bincode(replicas).values();
 
         // Replicas
         let (replica_checkpoint, processed_payloads) =
@@ -46,24 +50,28 @@ pub fn paxos_bench<'a>(
 
         // Get the latest checkpoint sequence per replica
         let checkpoint_tick = acceptors.tick();
-        let a_checkpoint = unsafe {
-            // SAFETY: even though we batch the checkpoint messages, because we reduce over the entire history,
-            // the final min checkpoint is deterministic
+        let a_checkpoint = {
             // TODO(shadaj): once we can reduce keyed over unbounded streams, this should be safe
-
             let a_checkpoint_largest_seqs = replica_checkpoint
                 .broadcast_bincode(&acceptors)
-                .tick_batch(&checkpoint_tick)
-                .persist()
-                .reduce_keyed_commutative(q!(|curr_seq, seq| {
+                .entries()
+                .into_keyed()
+                .reduce_commutative(q!(|curr_seq, seq| {
                     if seq > *curr_seq {
                         *curr_seq = seq;
                     }
-                }));
+                }))
+                .snapshot(
+                    &checkpoint_tick,
+                    nondet!(
+                        /// even though we batch the checkpoint messages, because we reduce over the entire history,
+                        /// the final min checkpoint is deterministic
+                    ),
+                );
 
             let a_checkpoints_quorum_reached = a_checkpoint_largest_seqs
                 .clone()
-                .count()
+                .key_count()
                 .filter_map(q!(move |num_received| if num_received == f + 1 {
                     Some(true)
                 } else {
@@ -72,6 +80,7 @@ pub fn paxos_bench<'a>(
 
             // Find the smallest checkpoint seq that everyone agrees to
             a_checkpoint_largest_seqs
+                .entries()
                 .continue_if(a_checkpoints_quorum_reached)
                 .map(q!(|(_sender, seq)| seq))
                 .min()
@@ -85,7 +94,8 @@ pub fn paxos_bench<'a>(
                 payload.value.0,
                 ((payload.key, payload.value.1), Ok(()))
             )))
-            .send_bincode_anonymous(clients);
+            .demux_bincode(clients)
+            .values();
 
         // we only mark a transaction as committed when all replicas have applied it
         collect_quorum::<_, _, _, ()>(
@@ -97,9 +107,30 @@ pub fn paxos_bench<'a>(
         .end_atomic()
     };
 
-    let bench_results = unsafe { bench_client(clients, paxos_processor, num_clients_per_node) };
+    let bench_results = bench_client(
+        clients,
+        inc_u32_workload_generator,
+        paxos_processor,
+        num_clients_per_node,
+        nondet!(/** bench */),
+    );
 
     print_bench_results(bench_results, client_aggregator, clients);
+}
+
+/// Generates an incrementing u32 for each virtual client ID, starting at 0
+pub fn inc_u32_workload_generator<'a, Client>(
+    _client: &Cluster<'a, Client>,
+    payload_request: Stream<(u32, Option<u32>), Cluster<'a, Client>, Unbounded, NoOrder>,
+) -> Stream<(u32, u32), Cluster<'a, Client>, Unbounded, NoOrder> {
+    payload_request.map(q!(move |(virtual_id, payload)| {
+        let value = if let Some(payload) = payload {
+            payload + 1
+        } else {
+            0
+        };
+        (virtual_id, value)
+    }))
 }
 
 #[cfg(test)]
@@ -241,15 +272,14 @@ mod tests {
         let mut found = 0;
         let mut client_out = client_out;
         while let Some(line) = client_out.recv().await {
-            if let Some(caps) = re.captures(&line) {
-                if let Ok(lower) = f64::from_str(&caps[1]) {
-                    if lower > 0.0 {
-                        println!("Found throughput lower-bound: {}", lower);
-                        found += 1;
-                        if found == 2 {
-                            break;
-                        }
-                    }
+            if let Some(caps) = re.captures(&line)
+                && let Ok(lower) = f64::from_str(&caps[1])
+                && 0.0 < lower
+            {
+                println!("Found throughput lower-bound: {}", lower);
+                found += 1;
+                if found == 2 {
+                    break;
                 }
             }
         }

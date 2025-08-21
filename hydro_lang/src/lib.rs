@@ -1,5 +1,4 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
-#![cfg_attr(nightly, feature(file_lock))]
 
 stageleft::stageleft_no_entry_crate!();
 
@@ -27,11 +26,18 @@ pub mod runtime_context;
 #[cfg_attr(docsrs, doc(cfg(feature = "dfir_context")))]
 pub use runtime_context::RUNTIME_CONTEXT;
 
+pub mod unsafety;
+pub use unsafety::*;
+
 pub mod boundedness;
 pub use boundedness::{Bounded, Unbounded};
 
 pub mod stream;
 pub use stream::{NoOrder, Stream, TotalOrder};
+
+pub mod keyed_singleton;
+pub mod keyed_stream;
+pub use keyed_stream::KeyedStream;
 
 pub mod singleton;
 pub use singleton::Singleton;
@@ -41,7 +47,7 @@ pub use optional::Optional;
 
 pub mod location;
 pub use location::cluster::CLUSTER_SELF_ID;
-pub use location::{Atomic, Cluster, ClusterId, External, Location, Process, Tick};
+pub use location::{Atomic, Cluster, ClusterId, External, Location, NetworkHint, Process, Tick};
 
 #[cfg(feature = "build")]
 #[cfg_attr(docsrs, doc(cfg(feature = "build")))]
@@ -53,6 +59,8 @@ pub mod cycle;
 
 pub mod builder;
 pub use builder::FlowBuilder;
+
+mod manual_expr;
 
 pub mod ir;
 
@@ -72,6 +80,15 @@ pub mod backtrace;
 #[cfg(feature = "deploy")]
 #[cfg_attr(docsrs, doc(cfg(feature = "deploy")))]
 pub mod test_util;
+
+#[cfg(feature = "build")]
+#[ctor::ctor]
+fn init_rewrites() {
+    stageleft::add_private_reexport(
+        vec!["tokio_util", "codec", "lines_codec"],
+        vec!["tokio_util", "codec"],
+    );
+}
 
 #[cfg(test)]
 mod test_init {

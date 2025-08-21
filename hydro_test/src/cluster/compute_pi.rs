@@ -30,23 +30,25 @@ pub fn compute_pi<'a>(
         .all_ticks();
 
     let estimate = trials
-        .send_bincode_anonymous(&process)
+        .send_bincode(&process)
+        .values()
         .reduce_commutative(q!(|(inside, total), (inside_batch, total_batch)| {
             *inside += inside_batch;
             *total += total_batch;
         }));
 
-    unsafe {
-        // SAFETY: intentional non-determinism
-        estimate.sample_every(q!(Duration::from_secs(1)))
-    }
-    .for_each(q!(|(inside, total)| {
-        println!(
-            "pi: {} ({} trials)",
-            4.0 * inside as f64 / total as f64,
-            total
-        );
-    }));
+    estimate
+        .sample_every(
+            q!(Duration::from_secs(1)),
+            nondet!(/** intentional output */),
+        )
+        .for_each(q!(|(inside, total)| {
+            println!(
+                "pi: {} ({} trials)",
+                4.0 * inside as f64 / total as f64,
+                total
+            );
+        }));
 
     (cluster, process)
 }

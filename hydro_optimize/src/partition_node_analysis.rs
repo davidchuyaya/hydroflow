@@ -80,12 +80,11 @@ fn union(
     tuple2: Option<&StructOrTuple>,
     tuple2index: &StructOrTupleIndex,
 ) -> Option<StructOrTuple> {
-    if let (Some(t1), Some(t2)) = (tuple1, tuple2) {
-        if let Some(t1_child) = t1.get_dependencies(tuple1index) {
-            if let Some(t2_child) = t2.get_dependencies(tuple2index) {
-                return StructOrTuple::union(&t1_child, &t2_child);
-            }
-        }
+    if let (Some(t1), Some(t2)) = (tuple1, tuple2)
+        && let Some(t1_child) = t1.get_dependencies(tuple1index)
+        && let Some(t2_child) = t2.get_dependencies(tuple2index)
+    {
+        return StructOrTuple::union(&t1_child, &t2_child);
     }
     None
 }
@@ -196,11 +195,11 @@ fn input_dependency_analysis_node(
         | HydroNode::ExternalInput { .. } => {
             // For each input the first (and potentially only) parent depends on, take its dependency
             for input_id in input_taint_entry.iter() {
-                if let Some(parent_dependencies_on_input) = parent_input_dependencies.get(input_id) {
-                    if let Some(parent_dependency) = parent_dependencies_on_input.get(&0) {
-                        input_dependencies_entry.insert(*input_id, parent_dependency.clone());
-                        continue;
-                    }
+                if let Some(parent_dependencies_on_input) = parent_input_dependencies.get(input_id) &&
+                    let Some(parent_dependency) = parent_dependencies_on_input.get(&0)
+                {
+                    input_dependencies_entry.insert(*input_id, parent_dependency.clone());
+                    continue;
                 }
                 // Parent is tainted by input but has no dependencies, delete
                 input_dependencies_entry.remove(input_id);
@@ -280,14 +279,14 @@ fn input_dependency_analysis_node(
             assert_eq!(parent_ids.len(), 1, "Node {:?} has the wrong number of parents.", node);
             // enumerate [(a,b)] = [(0,a),(1,b)]
             for input_id in input_taint_entry.iter() {
-                if let Some(parent_dependencies_on_input) = parent_input_dependencies.get(input_id) {
-                    if let Some(parent_dependency) = parent_dependencies_on_input.get(&0) {
-                        // Set the 1st index to the parent's dependency
-                        let mut new_dependency = StructOrTuple::default();
-                        new_dependency.set_dependencies(&vec!["1".to_string()], parent_dependency, &vec![]);
-                        input_dependencies_entry.insert(*input_id, new_dependency);
-                        continue;
-                    }
+                if let Some(parent_dependencies_on_input) = parent_input_dependencies.get(input_id) &&
+                    let Some(parent_dependency) = parent_dependencies_on_input.get(&0)
+                {
+                    // Set the 1st index to the parent's dependency
+                    let mut new_dependency = StructOrTuple::default();
+                    new_dependency.set_dependencies(&vec!["1".to_string()], parent_dependency, &vec![]);
+                    input_dependencies_entry.insert(*input_id, new_dependency);
+                    continue;
                 }
                 // Parent is tainted by input but has no dependencies, delete
                 input_dependencies_entry.remove(input_id);
@@ -307,15 +306,14 @@ fn input_dependency_analysis_node(
                 analyzer.output_dependencies.remove_none_fields(keep_topmost_none_fields).unwrap_or_default()
             });
             for input_id in input_taint_entry.iter() {
-                if let Some(parent_dependencies_on_input) = parent_input_dependencies.get(input_id) {
-                    if let Some(parent_dependency) = parent_dependencies_on_input.get(&0) {
+                if let Some(parent_dependencies_on_input) = parent_input_dependencies.get(input_id) &&
+                    let Some(parent_dependency) = parent_dependencies_on_input.get(&0) &&
                         // Project the parent's dependencies based on how f transforms the output
-                        if let Some(projected_dependencies) = StructOrTuple::project_parent(parent_dependency, syn_analysis_results) {
-                            println!("Node {:?} input {:?} has projected dependencies: {:?}", next_stmt_id, input_id, projected_dependencies);
-                            input_dependencies_entry.insert(*input_id, projected_dependencies);
-                            continue;
-                        }
-                    }
+                    let Some(projected_dependencies) = StructOrTuple::project_parent(parent_dependency, syn_analysis_results)
+                {
+                    println!("Node {:?} input {:?} has projected dependencies: {:?}", next_stmt_id, input_id, projected_dependencies);
+                    input_dependencies_entry.insert(*input_id, projected_dependencies);
+                    continue;
                 }
                 // Parent is tainted by input but has no dependencies, delete
                 input_dependencies_entry.remove(input_id);
@@ -323,17 +321,17 @@ fn input_dependency_analysis_node(
         }
         // Only the key is preserved
         HydroNode::ReduceKeyed { .. }
-        | HydroNode::FoldKeyed { .. } => {
-            assert_eq!(parent_ids.len(), 1, "Node {:?} has the wrong number of parents.", node);
+        | HydroNode::FoldKeyed { .. }
+        | HydroNode::ReduceKeyedWatermark { .. } => {
             for input_id in input_taint_entry.iter() {
-                if let Some(parent_dependencies_on_input) = parent_input_dependencies.get(input_id) {
-                    if let Some(parent_dependency) = parent_dependencies_on_input.get(&0) {
-                        // Inherit only the 0th index of the parent (the key)
-                        let mut new_dependency = StructOrTuple::default();
-                        new_dependency.set_dependencies(&vec!["0".to_string()], parent_dependency, &vec!["0".to_string()]);
-                        input_dependencies_entry.insert(*input_id, new_dependency);
-                        continue;
-                    }
+                if let Some(parent_dependencies_on_input) = parent_input_dependencies.get(input_id)
+                    && let Some(parent_dependency) = parent_dependencies_on_input.get(&0)
+                {
+                    // Inherit only the 0th index of the parent (the key)
+                    let mut new_dependency = StructOrTuple::default();
+                    new_dependency.set_dependencies(&vec!["0".to_string()], parent_dependency, &vec!["0".to_string()]);
+                    input_dependencies_entry.insert(*input_id, new_dependency);
+                    continue;
                 }
                 // Parent is tainted by input but has no dependencies, delete
                 input_dependencies_entry.remove(input_id);
@@ -398,14 +396,12 @@ fn input_dependency_analysis(
         let mut hasher = DefaultHasher::new();
         metadata.hash(&mut hasher);
         let hash = hasher.finish();
-        if let Some(prev) = prev_hash {
-            if prev == hash {
-                if metadata.optimistic_phase {
-                    println!("Optimistic phase reached fixpoint, starting pessimistic phase");
-                    metadata.optimistic_phase = false;
-                } else {
-                    break;
-                }
+        if prev_hash.is_some_and(|prev| prev == hash) {
+            if metadata.optimistic_phase {
+                println!("Optimistic phase reached fixpoint, starting pessimistic phase");
+                metadata.optimistic_phase = false;
+            } else {
+                break;
             }
         }
         prev_hash = Some(hash);
@@ -481,20 +477,18 @@ fn partitioning_constraint_analysis_node(
                     input_dependencies,
                     parent_ids[0],
                     &vec![],
-                ) {
-                    if let Some((parent1_inputs, parent1_dependencies)) =
-                        get_inputs_and_dependencies(
-                            input_taint,
-                            input_dependencies,
-                            parent_ids[1],
-                            &vec![],
-                        )
-                    {
-                        ordered_inputs.extend(parent0_inputs);
-                        ordered_dependencies.extend(parent0_dependencies);
-                        ordered_inputs.extend(parent1_inputs);
-                        ordered_dependencies.extend(parent1_dependencies);
-                    }
+                ) && let Some((parent1_inputs, parent1_dependencies)) =
+                    get_inputs_and_dependencies(
+                        input_taint,
+                        input_dependencies,
+                        parent_ids[1],
+                        &vec![],
+                    )
+                {
+                    ordered_inputs.extend(parent0_inputs);
+                    ordered_dependencies.extend(parent0_dependencies);
+                    ordered_inputs.extend(parent1_inputs);
+                    ordered_dependencies.extend(parent1_dependencies);
                 }
             }
             HydroNode::AntiJoin { .. } => {
@@ -505,20 +499,18 @@ fn partitioning_constraint_analysis_node(
                     input_dependencies,
                     parent_ids[0],
                     &vec!["0".to_string()],
-                ) {
-                    if let Some((parent1_inputs, parent1_dependencies)) =
-                        get_inputs_and_dependencies(
-                            input_taint,
-                            input_dependencies,
-                            parent_ids[1],
-                            &vec![],
-                        )
-                    {
-                        ordered_inputs.extend(parent0_inputs);
-                        ordered_dependencies.extend(parent0_dependencies);
-                        ordered_inputs.extend(parent1_inputs);
-                        ordered_dependencies.extend(parent1_dependencies);
-                    }
+                ) && let Some((parent1_inputs, parent1_dependencies)) =
+                    get_inputs_and_dependencies(
+                        input_taint,
+                        input_dependencies,
+                        parent_ids[1],
+                        &vec![],
+                    )
+                {
+                    ordered_inputs.extend(parent0_inputs);
+                    ordered_dependencies.extend(parent0_dependencies);
+                    ordered_inputs.extend(parent1_inputs);
+                    ordered_dependencies.extend(parent1_dependencies);
                 }
             }
             HydroNode::Join { .. } => {
@@ -529,23 +521,23 @@ fn partitioning_constraint_analysis_node(
                     input_dependencies,
                     parent_ids[0],
                     &vec!["0".to_string()],
-                ) {
-                    if let Some((parent1_inputs, parent1_dependencies)) =
-                        get_inputs_and_dependencies(
-                            input_taint,
-                            input_dependencies,
-                            parent_ids[1],
-                            &vec!["0".to_string()],
-                        )
-                    {
-                        ordered_inputs.extend(parent0_inputs);
-                        ordered_dependencies.extend(parent0_dependencies);
-                        ordered_inputs.extend(parent1_inputs);
-                        ordered_dependencies.extend(parent1_dependencies);
-                    }
+                ) && let Some((parent1_inputs, parent1_dependencies)) =
+                    get_inputs_and_dependencies(
+                        input_taint,
+                        input_dependencies,
+                        parent_ids[1],
+                        &vec!["0".to_string()],
+                    )
+                {
+                    ordered_inputs.extend(parent0_inputs);
+                    ordered_dependencies.extend(parent0_dependencies);
+                    ordered_inputs.extend(parent1_inputs);
+                    ordered_dependencies.extend(parent1_dependencies);
                 }
             }
-            HydroNode::ReduceKeyed { .. } | HydroNode::FoldKeyed { .. } => {
+            HydroNode::ReduceKeyed { .. }
+            | HydroNode::FoldKeyed { .. }
+            | HydroNode::ReduceKeyedWatermark { .. } => {
                 // Can only partition on the key. The key's inherited dependencies are already in input_dependencies for this node
                 if let Some((inputs, dependencies)) = get_inputs_and_dependencies(
                     input_taint,
@@ -748,7 +740,7 @@ mod tests {
     use hydro_lang::ir::deep_clone;
     use hydro_lang::location::LocationId;
     use hydro_lang::rewrites::persist_pullup::persist_pullup;
-    use hydro_lang::{Bounded, FlowBuilder, Location, NoOrder, Stream};
+    use hydro_lang::{Bounded, FlowBuilder, Location, NoOrder, Stream, nondet};
     use stageleft::q;
 
     use crate::partition_node_analysis::{
@@ -818,7 +810,8 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2)
+            .broadcast_bincode(&cluster2)
+            .values()
             .map(q!(|(a, b)| (b, a + 2)))
             .for_each(q!(|(b, a2)| {
                 println!("b: {}, a+2: {}", b, a2);
@@ -826,7 +819,7 @@ mod tests {
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // The operator being tested
         ]);
 
@@ -859,7 +852,8 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2)
+            .broadcast_bincode(&cluster2)
+            .values()
             .map(q!(|(a, b)| (b, a + 2)))
             .for_each(q!(|(b, a2)| {
                 println!("b: {}, a+2: {}", b, a2);
@@ -876,7 +870,8 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         cluster1
             .source_iter(q!([(1, (2, (3, 4)))]))
-            .broadcast_bincode_anonymous(&cluster2)
+            .broadcast_bincode(&cluster2)
+            .values()
             .map(q!(|(a, b)| (b.1, a, b.0 - a)))
             .map(q!(|(b1, _a, b0a)| (b0a, b1.0)))
             .for_each(q!(|(b0a, b10)| {
@@ -885,7 +880,7 @@ mod tests {
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // map 1
             (5, BTreeSet::from([2])), // map 2
         ]);
@@ -934,7 +929,8 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2)
+            .broadcast_bincode(&cluster2)
+            .values()
             .filter_map(q!(|(a, b)| { if a > 1 { Some((b, a + 2)) } else { None } }))
             .for_each(q!(|(b, a2)| {
                 println!("b: {}, a+2: {}", b, a2);
@@ -942,7 +938,7 @@ mod tests {
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // The operator being tested
         ]);
 
@@ -975,7 +971,8 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2)
+            .broadcast_bincode(&cluster2)
+            .values()
             .filter_map(q!(|(a, b)| {
                 if a > 1 {
                     Some((None, a + 2))
@@ -991,7 +988,7 @@ mod tests {
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // The operator being tested
         ]);
 
@@ -1017,21 +1014,20 @@ mod tests {
         let builder = FlowBuilder::new();
         let cluster1 = builder.cluster::<()>();
         let cluster2 = builder.cluster::<()>();
-        unsafe {
-            cluster1
-                .source_iter(q!([(1, 2)]))
-                .broadcast_bincode_anonymous(&cluster2)
-                .tick_batch(&cluster2.tick())
-                .delta()
-                .all_ticks()
-                .for_each(q!(|(a, b)| {
-                    println!("a: {}, b: {}", a, b);
-                }));
-        }
+        cluster1
+            .source_iter(q!([(1, 2)]))
+            .broadcast_bincode(&cluster2)
+            .values()
+            .batch(&cluster2.tick(), nondet!(/** test */))
+            .delta()
+            .all_ticks()
+            .for_each(q!(|(a, b)| {
+                println!("a: {}, b: {}", a, b);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // The operator being tested
         ]);
 
@@ -1057,17 +1053,16 @@ mod tests {
         let builder = FlowBuilder::new();
         let cluster1 = builder.cluster::<()>();
         let cluster2 = builder.cluster::<()>();
-        unsafe {
-            cluster1
-                .source_iter(q!([(1, 2)]))
-                .broadcast_bincode_anonymous(&cluster2)
-                .tick_batch(&cluster2.tick())
-                .delta()
-                .all_ticks()
-                .for_each(q!(|(a, b)| {
-                    println!("a: {}, b: {}", a, b);
-                }));
-        }
+        cluster1
+            .source_iter(q!([(1, 2)]))
+            .broadcast_bincode(&cluster2)
+            .values()
+            .batch(&cluster2.tick(), nondet!(/** test */))
+            .delta()
+            .all_ticks()
+            .for_each(q!(|(a, b)| {
+                println!("a: {}, b: {}", a, b);
+            }));
 
         let expected_partitionings = Some(Vec::new()); // No partitioning constraints
         test_input_partitionable(builder, cluster2.id(), expected_partitionings);
@@ -1080,23 +1075,22 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, (2, 3))]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let stream1 = input.clone().map(q!(|(a, b)| (b, a + 2)));
         let stream2 = input.map(q!(|(a, b)| ((b.1, b.1), a + 3)));
         let tick = cluster2.tick();
-        unsafe {
-            stream2
-                .tick_batch(&tick)
-                .chain(stream1.tick_batch(&tick))
-                .all_ticks()
-                .for_each(q!(|((x, b1), y)| {
-                    println!("x: {}, b.1: {}, y: {}", x, b1, y);
-                }));
-        }
+        stream2
+            .batch(&tick, nondet!(/** test */))
+            .chain(stream1.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|((x, b1), y)| {
+                println!("x: {}, b.1: {}, y: {}", x, b1, y);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // tee on the input
             (5, BTreeSet::from([2])), // stream2's map
             (6, BTreeSet::from([2])), // tee on the input
@@ -1151,19 +1145,18 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, (2, 3))]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let stream1 = input.clone().map(q!(|(a, b)| (b, a + 2)));
         let stream2 = input.map(q!(|(a, b)| ((b.1, b.1), a + 3)));
         let tick = cluster2.tick();
-        unsafe {
-            stream2
-                .tick_batch(&tick)
-                .chain(stream1.tick_batch(&tick))
-                .all_ticks()
-                .for_each(q!(|((x, b1), y)| {
-                    println!("x: {}, b.1: {}, y: {}", x, b1, y);
-                }));
-        }
+        stream2
+            .batch(&tick, nondet!(/** test */))
+            .chain(stream1.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|((x, b1), y)| {
+                println!("x: {}, b.1: {}, y: {}", x, b1, y);
+            }));
 
         let expected_partitionings = Some(Vec::new()); // No partitioning constraints
         test_input_partitionable(builder, cluster2.id(), expected_partitionings);
@@ -1176,23 +1169,22 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, (2, 3))]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let stream1 = input.clone().map(q!(|(a, b)| (b, a + 2)));
         let stream2 = input.map(q!(|(a, b)| ((b.1, b.1), a + 3)));
         let tick = cluster2.tick();
-        unsafe {
-            stream2
-                .tick_batch(&tick)
-                .cross_product(stream1.tick_batch(&tick))
-                .all_ticks()
-                .for_each(q!(|(((b1, b1_again), a3), (b, a2))| {
-                    println!("((({}, {}), {}), ({:?}, {}))", b1, b1_again, a3, b, a2);
-                }));
-        }
+        stream2
+            .batch(&tick, nondet!(/** test */))
+            .cross_product(stream1.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|(((b1, b1_again), a3), (b, a2))| {
+                println!("((({}, {}), {}), ({:?}, {}))", b1, b1_again, a3, b, a2);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // tee on the input
             (5, BTreeSet::from([2])), // stream2's map
             (6, BTreeSet::from([2])), // tee on the input
@@ -1255,19 +1247,18 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, (2, 3))]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let stream1 = input.clone().map(q!(|(a, b)| (b, a + 2)));
         let stream2 = input.map(q!(|(a, b)| ((b.1, b.1), a + 3)));
         let tick = cluster2.tick();
-        unsafe {
-            stream2
-                .tick_batch(&tick)
-                .cross_product(stream1.tick_batch(&tick))
-                .all_ticks()
-                .for_each(q!(|(((b1, b1_again), a3), (b, a2))| {
-                    println!("((({}, {}), {}), ({:?}, {}))", b1, b1_again, a3, b, a2);
-                }));
-        }
+        stream2
+            .batch(&tick, nondet!(/** test */))
+            .cross_product(stream1.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|(((b1, b1_again), a3), (b, a2))| {
+                println!("((({}, {}), {}), ({:?}, {}))", b1, b1_again, a3, b, a2);
+            }));
 
         let expected_partitionings = None;
         test_input_partitionable(builder, cluster2.id(), expected_partitionings);
@@ -1280,23 +1271,22 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, (2, 3))]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let stream1 = input.clone().map(q!(|(a, b)| (b, a)));
         let stream2 = input.map(q!(|(a, b)| ((b.1, b.1), a + 3)));
         let tick = cluster2.tick();
-        unsafe {
-            stream2
-                .tick_batch(&tick)
-                .join(stream1.tick_batch(&tick))
-                .all_ticks()
-                .for_each(q!(|((b1, b1_again), (a3, a))| {
-                    println!("(({}, {}), {}, {})", b1, b1_again, a3, a);
-                }));
-        }
+        stream2
+            .batch(&tick, nondet!(/** test */))
+            .join(stream1.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|((b1, b1_again), (a3, a))| {
+                println!("(({}, {}), {}, {})", b1, b1_again, a3, a);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // tee on the input
             (5, BTreeSet::from([2])), // stream2's map
             (6, BTreeSet::from([2])), // tee on the input
@@ -1371,19 +1361,18 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, (2, 3))]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let stream1 = input.clone().map(q!(|(a, b)| (b, a)));
         let stream2 = input.map(q!(|(a, b)| ((b.1, b.1), a + 3)));
         let tick = cluster2.tick();
-        unsafe {
-            stream2
-                .tick_batch(&tick)
-                .join(stream1.tick_batch(&tick))
-                .all_ticks()
-                .for_each(q!(|((b1, b1_again), (a3, a))| {
-                    println!("(({}, {}), {}, {})", b1, b1_again, a3, a);
-                }));
-        }
+        stream2
+            .batch(&tick, nondet!(/** test */))
+            .join(stream1.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|((b1, b1_again), (a3, a))| {
+                println!("(({}, {}), {}, {})", b1, b1_again, a3, a);
+            }));
 
         // Can either partition on b.0 or b.1, since the join is only successful when both b.0=b.1 or b.1=b.1
         let expected_partitionings = Some(vec![
@@ -1398,20 +1387,19 @@ mod tests {
         let builder = FlowBuilder::new();
         let cluster1 = builder.cluster::<()>();
         let cluster2 = builder.cluster::<()>();
-        unsafe {
-            cluster1
-                .source_iter(q!([(1, 2)]))
-                .broadcast_bincode_anonymous(&cluster2)
-                .assume_ordering()
-                .enumerate()
-                .for_each(q!(|(i, (a, b))| {
-                    println!("i: {}, a: {}, b: {}", i, a, b);
-                }));
-        }
+        cluster1
+            .source_iter(q!([(1, 2)]))
+            .broadcast_bincode(&cluster2)
+            .values()
+            .assume_ordering(nondet!(/** test */))
+            .enumerate()
+            .for_each(q!(|(i, (a, b))| {
+                println!("i: {}, a: {}, b: {}", i, a, b);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // enumerate
         ]);
 
@@ -1440,16 +1428,15 @@ mod tests {
         let builder = FlowBuilder::new();
         let cluster1 = builder.cluster::<()>();
         let cluster2 = builder.cluster::<()>();
-        unsafe {
-            cluster1
-                .source_iter(q!([(1, 2)]))
-                .broadcast_bincode_anonymous(&cluster2)
-                .assume_ordering()
-                .enumerate()
-                .for_each(q!(|(i, (a, b))| {
-                    println!("i: {}, a: {}, b: {}", i, a, b);
-                }));
-        }
+        cluster1
+            .source_iter(q!([(1, 2)]))
+            .broadcast_bincode(&cluster2)
+            .values()
+            .assume_ordering(nondet!(/** test */))
+            .enumerate()
+            .for_each(q!(|(i, (a, b))| {
+                println!("i: {}, a: {}, b: {}", i, a, b);
+            }));
 
         let expected_partitionings = None;
         test_input_partitionable(builder, cluster2.id(), expected_partitionings);
@@ -1460,21 +1447,22 @@ mod tests {
         let builder = FlowBuilder::new();
         let cluster1 = builder.cluster::<()>();
         let cluster2 = builder.cluster::<()>();
-        unsafe {
-            cluster1
-                .source_iter(q!([(1, 2)]))
-                .broadcast_bincode_anonymous(&cluster2)
-                .tick_batch(&cluster2.tick())
-                .reduce_keyed_commutative(q!(|acc, b| *acc += b))
-                .all_ticks()
-                .for_each(q!(|(a, b_sum)| {
-                    println!("a: {}, b_sum: {}", a, b_sum);
-                }));
-        }
+        cluster1
+            .source_iter(q!([(1, 2)]))
+            .broadcast_bincode(&cluster2)
+            .values()
+            .batch(&cluster2.tick(), nondet!(/** test */))
+            .into_keyed()
+            .reduce_commutative(q!(|acc, b| *acc += b))
+            .entries()
+            .all_ticks()
+            .for_each(q!(|(a, b_sum)| {
+                println!("a: {}, b_sum: {}", a, b_sum);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // reduce_keyed
         ]);
 
@@ -1505,17 +1493,18 @@ mod tests {
         let builder = FlowBuilder::new();
         let cluster1 = builder.cluster::<()>();
         let cluster2 = builder.cluster::<()>();
-        unsafe {
-            cluster1
-                .source_iter(q!([(1, 2)]))
-                .broadcast_bincode_anonymous(&cluster2)
-                .tick_batch(&cluster2.tick())
-                .reduce_keyed_commutative(q!(|acc, b| *acc += b))
-                .all_ticks()
-                .for_each(q!(|(a, b_sum)| {
-                    println!("a: {}, b_sum: {}", a, b_sum);
-                }));
-        }
+        cluster1
+            .source_iter(q!([(1, 2)]))
+            .broadcast_bincode(&cluster2)
+            .values()
+            .batch(&cluster2.tick(), nondet!(/** test */))
+            .into_keyed()
+            .reduce_commutative(q!(|acc, b| *acc += b))
+            .entries()
+            .all_ticks()
+            .for_each(q!(|(a, b_sum)| {
+                println!("a: {}, b_sum: {}", a, b_sum);
+            }));
 
         let expected_partitionings = Some(vec![BTreeMap::from([(
             2,
@@ -1529,24 +1518,23 @@ mod tests {
         let builder = FlowBuilder::new();
         let cluster1 = builder.cluster::<()>();
         let cluster2 = builder.cluster::<()>();
-        unsafe {
-            cluster1
-                .source_iter(q!([(1, 2)]))
-                .broadcast_bincode_anonymous(&cluster2)
-                .tick_batch(&cluster2.tick())
-                .reduce_commutative(q!(|(acc_a, acc_b), (a, b)| {
-                    *acc_a += a;
-                    *acc_b += b;
-                }))
-                .all_ticks()
-                .for_each(q!(|(a_sum, b_sum)| {
-                    println!("a_sum: {}, b_sum: {}", a_sum, b_sum);
-                }));
-        }
+        cluster1
+            .source_iter(q!([(1, 2)]))
+            .broadcast_bincode(&cluster2)
+            .values()
+            .batch(&cluster2.tick(), nondet!(/** test */))
+            .reduce_commutative(q!(|(acc_a, acc_b), (a, b)| {
+                *acc_a += a;
+                *acc_b += b;
+            }))
+            .all_ticks()
+            .for_each(q!(|(a_sum, b_sum)| {
+                println!("a_sum: {}, b_sum: {}", a_sum, b_sum);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),  // Network
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // reduce
         ]);
 
@@ -1571,20 +1559,19 @@ mod tests {
         let builder = FlowBuilder::new();
         let cluster1 = builder.cluster::<()>();
         let cluster2 = builder.cluster::<()>();
-        unsafe {
-            cluster1
-                .source_iter(q!([(1, 2)]))
-                .broadcast_bincode_anonymous(&cluster2)
-                .tick_batch(&cluster2.tick())
-                .reduce_commutative(q!(|(acc_a, acc_b), (a, b)| {
-                    *acc_a += a;
-                    *acc_b += b;
-                }))
-                .all_ticks()
-                .for_each(q!(|(a_sum, b_sum)| {
-                    println!("a_sum: {}, b_sum: {}", a_sum, b_sum);
-                }));
-        }
+        cluster1
+            .source_iter(q!([(1, 2)]))
+            .broadcast_bincode(&cluster2)
+            .values()
+            .batch(&cluster2.tick(), nondet!(/** test */))
+            .reduce_commutative(q!(|(acc_a, acc_b), (a, b)| {
+                *acc_a += a;
+                *acc_b += b;
+            }))
+            .all_ticks()
+            .for_each(q!(|(a_sum, b_sum)| {
+                println!("a_sum: {}, b_sum: {}", a_sum, b_sum);
+            }));
 
         let expected_partitionings = None;
         test_input_partitionable(builder, cluster2.id(), expected_partitionings);
@@ -1597,7 +1584,8 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let cluster2_tick = cluster2.tick();
         let (complete_cycle, cycle) =
             cluster2_tick.cycle::<Stream<(usize, usize), _, Bounded, NoOrder>>();
@@ -1605,10 +1593,10 @@ mod tests {
             .clone()
             .filter(q!(|(a, _b)| *a > 2))
             .map(q!(|(a, b)| (a, b + 2)));
-        unsafe {
-            complete_cycle
-                .complete_next_tick(prev_tick_input.chain(input.tick_batch(&cluster2_tick)));
-        }
+        complete_cycle.complete_next_tick(
+            prev_tick_input.chain(input.batch(&cluster2_tick, nondet!(/** test */))),
+        );
+
         cycle.all_ticks().for_each(q!(|(a, b)| {
             println!("a: {}, b: {}", a, b);
         }));
@@ -1660,7 +1648,8 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let cluster2_tick = cluster2.tick();
         let (complete_cycle, cycle) =
             cluster2_tick.cycle::<Stream<(usize, usize), _, Bounded, NoOrder>>();
@@ -1668,10 +1657,10 @@ mod tests {
             .clone()
             .filter(q!(|(a, _b)| *a > 2))
             .map(q!(|(a, b)| (a, b + 2)));
-        unsafe {
-            complete_cycle
-                .complete_next_tick(prev_tick_input.chain(input.tick_batch(&cluster2_tick)));
-        }
+        complete_cycle.complete_next_tick(
+            prev_tick_input.chain(input.batch(&cluster2_tick, nondet!(/** test */))),
+        );
+
         cycle.all_ticks().for_each(q!(|(a, b)| {
             println!("a: {}, b: {}", a, b);
         }));
@@ -1687,14 +1676,15 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let cluster2_tick = cluster2.tick();
         let (complete_cycle1, cycle1) =
             cluster2_tick.cycle::<Stream<(usize, usize), _, Bounded, NoOrder>>();
         let (complete_cycle2, cycle2) =
             cluster2_tick.cycle::<Stream<(usize, usize), _, Bounded, NoOrder>>();
-        let chained = unsafe {
-            cycle1.join(input.tick_batch(&cluster2_tick))
+        let chained = {
+            cycle1.join(input.batch(&cluster2_tick, nondet!(/** test */)))
                 .map(q!(|(_, (b1,b2))| (b1,b2))) // Both values are influenced by the join with cycle2_out
                 .chain(cycle2)
         };
@@ -1783,14 +1773,15 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let cluster2_tick = cluster2.tick();
         let (complete_cycle1, cycle1) =
             cluster2_tick.cycle::<Stream<(usize, usize), _, Bounded, NoOrder>>();
         let (complete_cycle2, cycle2) =
             cluster2_tick.cycle::<Stream<(usize, usize), _, Bounded, NoOrder>>();
-        let chained = unsafe {
-            cycle1.join(input.tick_batch(&cluster2_tick))
+        let chained = {
+            cycle1.join(input.batch(&cluster2_tick, nondet!(/** test */)))
                 .map(q!(|(_, (b1,b2))| (b1,b2))) // Both values are influenced by the join with cycle2_out
                 .chain(cycle2)
         };
@@ -1817,24 +1808,23 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let tick = cluster2.tick();
         let stream1 = input.map(q!(|(a, b)| (b, a + 2)));
         let stream2 = cluster2.source_iter(q!([(3, 4)]));
-        unsafe {
-            stream2
-                .tick_batch(&tick)
-                .chain(stream1.tick_batch(&tick))
-                .all_ticks()
-                .for_each(q!(|_| {
-                    println!("No dependencies");
-                }));
-        }
+        stream2
+            .batch(&tick, nondet!(/** test */))
+            .chain(stream1.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|_| {
+                println!("No dependencies");
+            }));
 
         let expected_taint = BTreeMap::from([
             (0, BTreeSet::from([])),  // source_iter
             (3, BTreeSet::from([])),  // Network
-            (4, BTreeSet::from([3])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (4, BTreeSet::from([3])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (5, BTreeSet::from([3])), // map
             (6, BTreeSet::from([3])), // chain
         ]);
@@ -1870,19 +1860,18 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let tick = cluster2.tick();
         let stream1 = input.map(q!(|(a, b)| (b, a + 2)));
         let stream2 = cluster2.source_iter(q!([(3, 4)]));
-        unsafe {
-            stream2
-                .tick_batch(&tick)
-                .chain(stream1.tick_batch(&tick))
-                .all_ticks()
-                .for_each(q!(|_| {
-                    println!("No dependencies");
-                }));
-        }
+        stream2
+            .batch(&tick, nondet!(/** test */))
+            .chain(stream1.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|_| {
+                println!("No dependencies");
+            }));
 
         let expected_partitionings = Some(Vec::new());
         test_input_partitionable(builder, cluster2.id(), expected_partitionings);
@@ -1895,36 +1884,40 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input1 = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let input2 = cluster1
             .source_iter(q!([(3, 4)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let tick = cluster2.tick();
-        unsafe {
-            let stream1 = input1.map(q!(|(a, b)| (a * 2, b))).tick_batch(&tick);
-            let stream2 = input2.map(q!(|(a, b)| (-a, b))).tick_batch(&tick);
-            stream2
-                .clone()
-                .chain(stream1.clone())
-                .all_ticks()
-                .for_each(q!(|_| {
-                    println!("Dependent on both input1.b and input2.b");
-                }));
-            stream2
-                .join(stream1)
-                .all_ticks()
-                .for_each(q!(|(_, (b1, b2))| {
-                    println!("b from input 1: {}, b from input 2: {}", b1, b2);
-                }));
-        }
+        let stream1 = input1
+            .map(q!(|(a, b)| (a * 2, b)))
+            .batch(&tick, nondet!(/** test */));
+        let stream2 = input2
+            .map(q!(|(a, b)| (-a, b)))
+            .batch(&tick, nondet!(/** test */));
+        stream2
+            .clone()
+            .chain(stream1.clone())
+            .all_ticks()
+            .for_each(q!(|_| {
+                println!("Dependent on both input1.b and input2.b");
+            }));
+        stream2
+            .join(stream1)
+            .all_ticks()
+            .for_each(q!(|(_, (b1, b2))| {
+                println!("b from input 1: {}, b from input 2: {}", b1, b2);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::from([])),      // input2
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (4, BTreeSet::from([2])), // input2's map
             (5, BTreeSet::from([2])), // Tee(input2's map)
             (8, BTreeSet::from([])),  // input1
-            (9, BTreeSet::from([8])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (9, BTreeSet::from([8])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (10, BTreeSet::from([8])), // input1's map
             (11, BTreeSet::from([8])), // Tee(input1's map)
             (12, BTreeSet::from([2, 8])), // chain
@@ -1990,28 +1983,32 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input1 = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let input2 = cluster1
             .source_iter(q!([(3, 4)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let tick = cluster2.tick();
-        unsafe {
-            let stream1 = input1.map(q!(|(a, b)| (b, a * 2))).tick_batch(&tick);
-            let stream2 = input2.map(q!(|(a, b)| (b, -a))).tick_batch(&tick);
-            stream2
-                .clone()
-                .chain(stream1.clone())
-                .all_ticks()
-                .for_each(q!(|_| {
-                    println!("Dependent on both input1.b and input2.b");
-                }));
-            stream2
-                .join(stream1)
-                .all_ticks()
-                .for_each(q!(|(_, (a1, a2))| {
-                    println!("a*2 from input 1: {}, -a from input 2: {}", a1, a2);
-                }));
-        }
+        let stream1 = input1
+            .map(q!(|(a, b)| (b, a * 2)))
+            .batch(&tick, nondet!(/** test */));
+        let stream2 = input2
+            .map(q!(|(a, b)| (b, -a)))
+            .batch(&tick, nondet!(/** test */));
+        stream2
+            .clone()
+            .chain(stream1.clone())
+            .all_ticks()
+            .for_each(q!(|_| {
+                println!("Dependent on both input1.b and input2.b");
+            }));
+        stream2
+            .join(stream1)
+            .all_ticks()
+            .for_each(q!(|(_, (a1, a2))| {
+                println!("a*2 from input 1: {}, -a from input 2: {}", a1, a2);
+            }));
 
         let expected_partitioning = Some(vec![BTreeMap::from([
             (2, vec!["1".to_string(), "1".to_string()]),
@@ -2027,26 +2024,26 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input1 = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let input2 = cluster1
             .source_iter(q!([(3, 4)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let tick = cluster2.tick();
-        unsafe {
-            input1
-                .tick_batch(&tick)
-                .filter_not_in(input2.tick_batch(&tick))
-        }
-        .all_ticks()
-        .for_each(q!(|(a, b)| {
-            println!("a: {}, b: {}", a, b);
-        }));
+        input1
+            .batch(&tick, nondet!(/** test */))
+            .filter_not_in(input2.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|(a, b)| {
+                println!("a: {}, b: {}", a, b);
+            }));
 
         let expected_taint = BTreeMap::from([
             (2, BTreeSet::new()),     // input1
-            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (3, BTreeSet::from([2])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (6, BTreeSet::new()),     // input2's map
-            (7, BTreeSet::from([6])), /* The implicit map following Network, imposed by broadcast_bincode_anonymous */
+            (7, BTreeSet::from([6])), /* The implicit map following Network, imposed by broadcast_bincode.values */
             (8, BTreeSet::from([2])), // Difference. Isn't tainted by anti-joined parent
         ]);
 
@@ -2076,20 +2073,20 @@ mod tests {
         let cluster2 = builder.cluster::<()>();
         let input1 = cluster1
             .source_iter(q!([(1, 2)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let input2 = cluster1
             .source_iter(q!([(3, 4)]))
-            .broadcast_bincode_anonymous(&cluster2);
+            .broadcast_bincode(&cluster2)
+            .values();
         let tick = cluster2.tick();
-        unsafe {
-            input1
-                .tick_batch(&tick)
-                .filter_not_in(input2.tick_batch(&tick))
-        }
-        .all_ticks()
-        .for_each(q!(|(a, b)| {
-            println!("a: {}, b: {}", a, b);
-        }));
+        input1
+            .batch(&tick, nondet!(/** test */))
+            .filter_not_in(input2.batch(&tick, nondet!(/** test */)))
+            .all_ticks()
+            .for_each(q!(|(a, b)| {
+                println!("a: {}, b: {}", a, b);
+            }));
 
         let expected_partitionings = Some(vec![BTreeMap::from([
             (2, vec!["1".to_string()]),

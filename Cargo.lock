@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "dfir_lang"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "auto_impl",
  "clap",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "dfir_macro"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "dfir_lang",
  "itertools 0.13.0",
@@ -1297,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "dfir_rs"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "bincode",
  "byteorder",
@@ -1324,6 +1324,7 @@ dependencies = [
  "ref-cast",
  "regex",
  "rustc-hash 1.1.0",
+ "rustc_version 0.4.1",
  "sealed 0.5.0",
  "serde",
  "serde_json",
@@ -1719,16 +1720,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
 ]
 
 [[package]]
@@ -2240,7 +2231,7 @@ dependencies = [
 
 [[package]]
 name = "hydro_deploy"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-process",
@@ -2275,7 +2266,7 @@ dependencies = [
 
 [[package]]
 name = "hydro_deploy_integration"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -2291,7 +2282,7 @@ dependencies = [
 
 [[package]]
 name = "hydro_lang"
-version = "0.13.2"
+version = "0.14.0"
 dependencies = [
  "auto_impl",
  "backtrace",
@@ -2303,7 +2294,6 @@ dependencies = [
  "data-encoding",
  "dfir_lang",
  "dfir_rs",
- "fs2",
  "futures",
  "hydro_deploy",
  "hydro_deploy_integration",
@@ -2327,6 +2317,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-test",
+ "tokio-util",
  "toml",
  "trybuild",
  "trybuild-internals-api",
@@ -2352,7 +2343,7 @@ dependencies = [
 
 [[package]]
 name = "hydro_std"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "ctor 0.2.9",
  "hdrhistogram",
@@ -2368,6 +2359,7 @@ dependencies = [
 name = "hydro_test"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "clap",
  "colored 3.0.0",
  "ctor 0.2.9",
@@ -2916,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "lattices_macro"
-version = "0.5.9"
+version = "0.5.10"
 dependencies = [
  "insta",
  "prettyplease",
@@ -5263,9 +5255,9 @@ checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
 name = "stageleft"
-version = "0.9.4"
+version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e8521cbd5fa61b3426143e3752527680919c996ea725d6f88d813935749c6a1"
+checksum = "18c148ae16ad2e9a96cb1240ed1bec0556dfd55604e1641b08fa5d2e055edd19"
 dependencies = [
  "ctor 0.4.2",
  "proc-macro-crate",
@@ -5277,9 +5269,9 @@ dependencies = [
 
 [[package]]
 name = "stageleft_macro"
-version = "0.9.4"
+version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24752edd8758138bfc29cd8fc2f8fa7268ba0592b21a1a5a5744f9acd0ae76c5"
+checksum = "8da7da4f0ffb492a5bd88f857231e595d4b59e4fe8ce5a8811f9501c2e41d6ae"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5290,9 +5282,9 @@ dependencies = [
 
 [[package]]
 name = "stageleft_tool"
-version = "0.9.4"
+version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05b2b48455feff86f6cbc9a368a978671d03cdc5cc3a1b7d00a479d53bae2ad4"
+checksum = "257c43ad6a3e81c0c7bdf07c33741feeec71fa4d1605dd2c6b7d7da87bc726ee"
 dependencies = [
  "prettyplease",
  "proc-macro-crate",
@@ -6144,7 +6136,7 @@ dependencies = [
 
 [[package]]
 name = "variadics_macro"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "insta",
  "prettyplease",

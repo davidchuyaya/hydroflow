@@ -2,6 +2,7 @@ use hydro_lang::*;
 use hydro_std::bench_client::{bench_client, print_bench_results};
 
 use super::two_pc::{Coordinator, Participant};
+use crate::cluster::paxos_bench::inc_u32_workload_generator;
 use crate::cluster::two_pc::two_pc;
 
 pub struct Client;
@@ -15,22 +16,22 @@ pub fn two_pc_bench<'a>(
     clients: &Cluster<'a, Client>,
     client_aggregator: &Process<'a, Aggregator>,
 ) {
-    let bench_results = unsafe {
-        bench_client(
-            clients,
-            |payloads| {
-                // Send committed requests back to the original client
-                two_pc(
-                    coordinator,
-                    participants,
-                    num_participants,
-                    payloads.send_bincode(coordinator),
-                )
-                .send_bincode(clients)
-            },
-            num_clients_per_node,
-        )
-    };
+    let bench_results = bench_client(
+        clients,
+        inc_u32_workload_generator,
+        |payloads| {
+            // Send committed requests back to the original client
+            two_pc(
+                coordinator,
+                participants,
+                num_participants,
+                payloads.send_bincode(coordinator).entries(),
+            )
+            .demux_bincode(clients)
+        },
+        num_clients_per_node,
+        nondet!(/** bench */),
+    );
 
     print_bench_results(bench_results, client_aggregator, clients);
 }
@@ -157,15 +158,14 @@ mod tests {
         let mut found = 0;
         let mut client_out = client_out;
         while let Some(line) = client_out.recv().await {
-            if let Some(caps) = re.captures(&line) {
-                if let Ok(lower) = f64::from_str(&caps[1]) {
-                    if lower > 0.0 {
-                        println!("Found throughput lower-bound: {}", lower);
-                        found += 1;
-                        if found == 2 {
-                            break;
-                        }
-                    }
+            if let Some(caps) = re.captures(&line)
+                && let Ok(lower) = f64::from_str(&caps[1])
+                && 0.0 < lower
+            {
+                println!("Found throughput lower-bound: {}", lower);
+                found += 1;
+                if found == 2 {
+                    break;
                 }
             }
         }

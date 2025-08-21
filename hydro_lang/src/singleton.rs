@@ -14,7 +14,8 @@ use crate::ir::{HydroLeaf, HydroNode, TeeNode};
 use crate::location::tick::{Atomic, NoAtomic};
 use crate::location::{Location, LocationId, NoTick, Tick, check_matching_location};
 use crate::stream::{AtLeastOnce, ExactlyOnce};
-use crate::{Bounded, Optional, Stream, TotalOrder, Unbounded};
+use crate::unsafety::NonDet;
+use crate::{Bounded, NoOrder, Optional, Stream, TotalOrder, Unbounded};
 
 pub struct Singleton<Type, Loc, Bound> {
     pub(crate) location: Loc,
@@ -263,7 +264,7 @@ where
     pub fn flat_map_unordered<U, I, F>(
         self,
         f: impl IntoQuotedMut<'a, F, L>,
-    ) -> Stream<U, L, B, TotalOrder, ExactlyOnce>
+    ) -> Stream<U, L, B, NoOrder, ExactlyOnce>
     where
         I: IntoIterator<Item = U>,
         F: Fn(T) -> I + 'a,
@@ -277,6 +278,20 @@ where
                 metadata: self.location.new_node_metadata::<U>(),
             },
         )
+    }
+
+    pub fn flatten_ordered<U>(self) -> Stream<U, L, B, TotalOrder, ExactlyOnce>
+    where
+        T: IntoIterator<Item = U>,
+    {
+        self.flat_map_ordered(q!(|x| x))
+    }
+
+    pub fn flatten_unordered<U>(self) -> Stream<U, L, B, NoOrder, ExactlyOnce>
+    where
+        T: IntoIterator<Item = U>,
+    {
+        self.flat_map_unordered(q!(|x| x))
     }
 
     pub fn filter<F>(self, f: impl IntoQuotedMut<'a, F, L>) -> Optional<T, L, B>
@@ -389,11 +404,11 @@ where
     /// being atomically processed. The snapshot at tick `t + 1` is guaranteed to include
     /// at least all relevant data that contributed to the snapshot at tick `t`.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// Because this picks a snapshot of a singleton whose value is continuously changing,
     /// the output singleton has a non-deterministic value since the snapshot can be at an
     /// arbitrary point in time.
-    pub unsafe fn latest_tick(self) -> Singleton<T, Tick<L>, Bounded> {
+    pub fn snapshot(self, _nondet: NonDet) -> Singleton<T, Tick<L>, Bounded> {
         Singleton::new(
             self.location.clone().tick,
             HydroNode::Unpersist {
@@ -420,31 +435,27 @@ where
     /// as of that tick. The snapshot at tick `t + 1` is guaranteed to include at least all
     /// relevant data that contributed to the snapshot at tick `t`.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// Because this picks a snapshot of a singleton whose value is continuously changing,
     /// the output singleton has a non-deterministic value since the snapshot can be at an
     /// arbitrary point in time.
-    pub unsafe fn latest_tick(self, tick: &Tick<L>) -> Singleton<T, Tick<L>, Bounded>
+    pub fn snapshot(self, tick: &Tick<L>, nondet: NonDet) -> Singleton<T, Tick<L>, Bounded>
     where
         L: NoTick,
     {
-        unsafe { self.atomic(tick).latest_tick() }
+        self.atomic(tick).snapshot(nondet)
     }
 
     /// Eagerly samples the singleton as fast as possible, returning a stream of snapshots
     /// with order corresponding to increasing prefixes of data contributing to the singleton.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// At runtime, the singleton will be arbitrarily sampled as fast as possible, but due
     /// to non-deterministic batching and arrival of inputs, the output stream is
     /// non-deterministic.
-    pub unsafe fn sample_eager(self) -> Stream<T, L, Unbounded, TotalOrder, AtLeastOnce> {
+    pub fn sample_eager(self, nondet: NonDet) -> Stream<T, L, Unbounded, TotalOrder, AtLeastOnce> {
         let tick = self.location.tick();
-
-        unsafe {
-            // SAFETY: source of intentional non-determinism
-            self.latest_tick(&tick).all_ticks().weakest_retries()
-        }
+        self.snapshot(&tick, nondet).all_ticks().weakest_retries()
     }
 
     /// Given a time interval, returns a stream corresponding to snapshots of the singleton
@@ -453,26 +464,21 @@ where
     /// represent the value of the singleton given some prefix of the streams leading up to
     /// it.
     ///
-    /// # Safety
+    /// # Non-Determinism
     /// The output stream is non-deterministic in which elements are sampled, since this
     /// is controlled by a clock.
-    pub unsafe fn sample_every(
+    pub fn sample_every(
         self,
         interval: impl QuotedWithContext<'a, std::time::Duration, L> + Copy + 'a,
+        nondet: NonDet,
     ) -> Stream<T, L, Unbounded, TotalOrder, AtLeastOnce> {
-        let samples = unsafe {
-            // SAFETY: source of intentional non-determinism
-            self.location.source_interval(interval)
-        };
+        let samples = self.location.source_interval(interval, nondet);
         let tick = self.location.tick();
 
-        unsafe {
-            // SAFETY: source of intentional non-determinism
-            self.latest_tick(&tick)
-                .continue_if(samples.tick_batch(&tick).first())
-                .all_ticks()
-                .weakest_retries()
-        }
+        self.snapshot(&tick, nondet)
+            .continue_if(samples.batch(&tick, nondet).first())
+            .all_ticks()
+            .weakest_retries()
     }
 }
 
@@ -620,7 +626,7 @@ mod tests {
     use hydro_deploy::Deployment;
     use stageleft::q;
 
-    use crate::{FlowBuilder, Location};
+    use crate::*;
 
     #[tokio::test]
     async fn tick_cycle_cardinality() {
@@ -638,7 +644,7 @@ mod tests {
             .clone()
             .into_stream()
             .count()
-            .continue_if(unsafe { input.tick_batch(&node_tick).first() })
+            .continue_if(input.batch(&node_tick, nondet!(/** testing */)).first())
             .all_ticks()
             .send_bincode_external(&external);
         complete_cycle.complete_next_tick(singleton);
