@@ -10,6 +10,7 @@ pub struct Server {}
 /// - Otherwise, it returns (virt_client_id, server_id, false).
 ///
 /// If acquire = false, then the client wants to release its lock. Return (virt_client_id, server_id, true).
+#[expect(clippy::type_complexity, reason = "internal Lock Server code // TODO")]
 pub fn lock_server<'a, Client>(
     server: &Process<'a, Server>,
     payloads: Stream<

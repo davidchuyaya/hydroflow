@@ -15,7 +15,9 @@ pub struct Server {}
 /// - list_lecture_questions_all (takes api_key & lecture_id, returns question, question_id, optional answer joining on answer_id = question_id, only approves if user is admin)
 /// - list_lecture_questions_user (takes api_key & lecture_id, returns question, question_id, optional answer joining on answer_id = question_id if this user wrote the answer)
 /// - add_answer (takes api_key, question_id, answer)
-/// Any call with an invalid API key (either it does not exist or does not have the privileges required) will not receive a response.
+///
+///   Any call with an invalid API key (either it does not exist or does not have the privileges required) will not receive a response.
+#[expect(clippy::too_many_arguments, clippy::type_complexity, reason = "internal Web Submit code // TODO")]
 pub fn web_submit<'a, Client>(
     server: &Process<'a, Server>,
     add_lecture: Stream<
@@ -99,14 +101,14 @@ pub fn web_submit<'a, Client>(
     users_this_tick_with_api_key
         .clone()
         .all_ticks()
-        .for_each(q!(|(client_id, (email, is_admin, api_key))| {
+        .for_each(q!(|(_client_id, (email, _is_admin, api_key))| {
             self::send_email(api_key, email)
         }));
     // Send response back to client. Only done after the tick to ensure that once the client gets the response, the user has been added
     let add_user_response =
         users_this_tick_with_api_key.all_ticks().map(q!(|(
             client_id,
-            (email, is_admin, api_key),
+            (_email, _is_admin, _api_key),
         )| (client_id, ())));
 
     // Add lecture
@@ -118,22 +120,22 @@ pub fn web_submit<'a, Client>(
         .join(curr_users.clone())
         .all_ticks()
         .filter(q!(|(
-            api_key,
-            ((client_id, lecture_id, lecture), (email, is_admin)),
+            _api_key,
+            ((_client_id, _lecture_id, _lecture), (_email, is_admin)),
         )| *is_admin));
     let curr_lectures = unsafe { lectures.tick_batch(&lectures_tick) };
     let curr_lectures_hashmap = curr_lectures.clone().persist().fold_commutative_idempotent(
         q!(|| HashMap::new()),
         q!(
-            |map, (api_key, ((client_id, lecture_id, lecture), (email, is_admin)))| {
+            |map, (_api_key, ((_client_id, lecture_id, lecture), (_email, _is_admin)))| {
                 map.insert(lecture_id, lecture);
             }
         ),
     );
     // Only done after the lectures_tick to ensure that once the client gets the response, the lecture has been added
     let add_lecture_response = curr_lectures.all_ticks().map(q!(|(
-        api_key,
-        ((client_id, lecture_id, lecture), (email, is_admin)),
+        _api_key,
+        ((client_id, _lecture_id, _lecture), (_email, _is_admin)),
     )| (client_id, ())));
 
     // Add question
@@ -147,28 +149,28 @@ pub fn web_submit<'a, Client>(
         .join(curr_users.clone())
         .all_ticks()
         .filter(q!(|(
-            api_key,
-            ((client_id, question, question_id, lecture_id), (email, is_admin)),
+            _api_key,
+            ((_client_id, _question, _question_id, _lecture_id), (_email, is_admin)),
         )| *is_admin));
     let add_question_this_tick = unsafe { add_question_auth.tick_batch(&question_answer_tick) };
     let curr_questions = add_question_this_tick
         .clone()
         .map(q!(|(
-            api_key,
-            ((client_id, question, question_id, lecture_id), (email, is_admin)),
+            _api_key,
+            ((_client_id, question, question_id, lecture_id), (_email, _is_admin)),
         )| (lecture_id, (question_id, question))))
         .persist();
     // Only done after the question_answer_tick to ensure that once the client gets the response, the question has been added
     let add_question_response = add_question_this_tick.all_ticks().map(q!(|(
-        api_key,
-        ((client_id, question, question_id, lecture_id), (email, is_admin)),
+        _api_key,
+        ((client_id, _question, _question_id, _lecture_id), (_email, _is_admin)),
     )| (client_id, ())));
 
     // Get users
     let get_users_pre_join = get_users.map(q!(|(client_id, api_key)| (api_key, client_id)));
     let get_users_response = unsafe { get_users_pre_join.tick_batch(&user_auth_tick) }
         .join(curr_users.clone())
-        .filter_map(q!(|(api_key, (client_id, (email, is_admin)))| {
+        .filter_map(q!(|(_api_key, (client_id, (_email, is_admin)))| {
             if is_admin { Some(client_id) } else { None }
         }))
         .cross_singleton(curr_users_hashmap)
@@ -179,7 +181,7 @@ pub fn web_submit<'a, Client>(
     let list_lectures_auth = unsafe { list_lectures_pre_join.tick_batch(&user_auth_tick) }
         .join(curr_users.clone())
         .all_ticks()
-        .map(q!(|(api_key, (client_id, (email, is_admin)))| client_id));
+        .map(q!(|(_api_key, (client_id, (_email, _is_admin)))| client_id));
     let list_lectures_response = unsafe { list_lectures_auth.tick_batch(&lectures_tick) }
         .cross_singleton(curr_lectures_hashmap)
         .all_ticks();
@@ -196,13 +198,13 @@ pub fn web_submit<'a, Client>(
         .clone()
         .map(q!(|(
             api_key,
-            ((client_id, question_id, answer), (email, is_admin)),
+            ((_client_id, question_id, answer), (_email, _is_admin)),
         )| ((question_id, api_key), answer)))
         .persist();
     // Only done after the question_answer_tick to ensure that once the client gets the response, the answer has been added
     let add_answer_response = add_answer_this_tick.all_ticks().map(q!(|(
-        api_key,
-        ((client_id, question_id, answer), (email, is_admin)),
+        _api_key,
+        ((client_id, _question_id, _answer), (_email, _is_admin)),
     )| (client_id, ())));
 
     // List lecture questions all
@@ -215,8 +217,8 @@ pub fn web_submit<'a, Client>(
             .join(curr_users.clone())
             .all_ticks()
             .filter_map(q!(|(
-                api_key,
-                ((client_id, lecture_id), (email, is_admin)),
+                _api_key,
+                ((client_id, lecture_id), (_email, is_admin)),
             )| {
                 if is_admin {
                     Some((lecture_id, client_id))
@@ -228,14 +230,14 @@ pub fn web_submit<'a, Client>(
     let list_lecture_questions_all_question_only =
         unsafe { list_lecture_questions_all_auth.tick_batch(&question_answer_tick) }
             .join(curr_questions.clone())
-            .map(q!(|(lecture_id, (client_id, (question_id, question)))| (
+            .map(q!(|(_lecture_id, (client_id, (question_id, question)))| (
                 question_id,
                 (client_id, question)
             )));
     // Don't need to join on api_key since we're getting all answers, regardless of who wrote them
     let curr_answers_no_api_key = curr_answers
         .clone()
-        .map(q!(|((question_id, api_key), answer)| (question_id, answer)));
+        .map(q!(|((question_id, _api_key), answer)| (question_id, answer)));
     // Find all answers with the question ID
     let list_lecture_questions_all_with_answer = list_lecture_questions_all_question_only
         .clone()
@@ -275,13 +277,13 @@ pub fn web_submit<'a, Client>(
             .all_ticks()
             .map(q!(|(
                 api_key,
-                ((client_id, lecture_id), (email, is_admin)),
+                ((client_id, lecture_id), (_email, _is_admin)),
             )| (lecture_id, (client_id, api_key))));
     let list_lecture_questions_user_question_only =
         unsafe { list_lecture_questions_user_auth.tick_batch(&question_answer_tick) }
             .join(curr_questions)
             .map(q!(|(
-                lecture_id,
+                _lecture_id,
                 ((client_id, api_key), (question_id, question)),
             )| (
                 (question_id, api_key),
@@ -292,7 +294,7 @@ pub fn web_submit<'a, Client>(
         .clone()
         .join(curr_answers.clone())
         .map(q!(|(
-            (question_id, api_key),
+            (question_id, _api_key),
             ((client_id, question), answer),
         )| {
             (client_id, (question_id, question, Some(answer)))
@@ -300,7 +302,7 @@ pub fn web_submit<'a, Client>(
     // Find all questions without answers
     let list_lecture_questions_user_no_answer = list_lecture_questions_user_question_only
         .anti_join(curr_answers.map(q!(|(k, _)| k)))
-        .map(q!(|((question_id, api_key), (client_id, question))| (
+        .map(q!(|((question_id, _api_key), (client_id, question))| (
             client_id,
             (question_id, question, None)
         )));
@@ -335,4 +337,4 @@ fn generate_api_key(email: String) -> String {
     format!("{:x}", hash)
 }
 
-fn send_email(api_key: String, email: String) {}
+fn send_email(_api_key: String, _email: String) {}

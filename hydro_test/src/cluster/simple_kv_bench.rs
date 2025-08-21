@@ -1,13 +1,13 @@
 use hydro_lang::*;
 use hydro_std::bench_client::{bench_client, print_bench_results};
 
-pub struct KV;
+pub struct Kv;
 pub struct Client;
 pub struct Aggregator;
 
 pub fn simple_kv_bench<'a>(
     num_clients_per_node: usize,
-    kv: &Process<'a, KV>,
+    kv: &Process<'a, Kv>,
     clients: &Cluster<'a, Client>,
     client_aggregator: &Process<'a, Aggregator>,
 ) {

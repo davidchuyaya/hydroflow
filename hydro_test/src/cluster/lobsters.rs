@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}};
+use std::collections::HashSet;
 
 use hydro_lang::*;
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,9 @@ impl PartialOrd for Story {
 /// - get_stories (returns the 20 stories with the latest timestamps)
 /// - get_comments (returns the 20 comments with the latest timestamps)
 /// - get_story_comments (takes story_id, returns the comments for that story)
-/// Any call with an invalid API key (either it does not exist or does not have the privileges required) will not receive a response.
+///
+///   Any call with an invalid API key (either it does not exist or does not have the privileges required) will not receive a response.
+#[expect(clippy::too_many_arguments, clippy::type_complexity, reason = "internal Lobsters code // TODO")]
 pub fn lobsters<'a, Client>(
     server: &Process<'a, Server>,
     add_user: Stream<
@@ -46,25 +48,25 @@ pub fn lobsters<'a, Client>(
         NoOrder,
     >,
     add_story: Stream<(ClusterId<Client>, (String, String, Instant)), Process<'a, Server>, Unbounded, NoOrder>,
-    add_comment: Stream<(ClusterId<Client>, (String, u32, String, Instant)), Process<'a, Server>, Unbounded, NoOrder>,
-    upvote_story: Stream<(ClusterId<Client>, (String, u32)), Process<'a, Server>, Unbounded, NoOrder>,
-    upvote_comment: Stream<
+    _add_comment: Stream<(ClusterId<Client>, (String, u32, String, Instant)), Process<'a, Server>, Unbounded, NoOrder>,
+    _upvote_story: Stream<(ClusterId<Client>, (String, u32)), Process<'a, Server>, Unbounded, NoOrder>,
+    _upvote_comment: Stream<
         (ClusterId<Client>, (String, u32)),
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
-    get_stories: Stream<ClusterId<Client>,
+    _get_stories: Stream<ClusterId<Client>,
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
-    get_comments: Stream<ClusterId<Client>,
+    _get_comments: Stream<ClusterId<Client>,
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
-    get_story_comments: Stream<
+    _get_story_comments: Stream<
         (ClusterId<Client>, u32),
         Process<'a, Server>,
         Unbounded,
@@ -92,14 +94,14 @@ pub fn lobsters<'a, Client>(
         }),
     );
     // Send response back to client. Only done after the tick to ensure that once the client gets the response, the user has been added
-    let add_user_response =
+    let _add_user_response =
         users_this_tick_with_api_key.all_ticks().map(q!(|(
             client_id,
             (_api_key, _username),
         )| (client_id, ())));
 
     // Get users
-    let get_users_response = unsafe { get_users.tick_batch(&user_auth_tick) }
+    let _get_users_response = unsafe { get_users.tick_batch(&user_auth_tick) }
         .cross_singleton(curr_users_hashset)
         .all_ticks();
 
@@ -114,7 +116,7 @@ pub fn lobsters<'a, Client>(
     let curr_stories = unsafe { stories.tick_batch(&stories_tick).assume_ordering() };
     // Assign each story a unique ID
     let (story_id_complete_cycle, story_id) = stories_tick.cycle_with_initial(stories_tick.singleton(q!(0)));
-    let indexed_curr_stories = curr_stories
+    let _indexed_curr_stories = curr_stories
         .clone()
         .enumerate()
         .cross_singleton(story_id.clone())
@@ -125,10 +127,10 @@ pub fn lobsters<'a, Client>(
         .map(q!(|(num_stories, story_id)| num_stories + story_id));
     story_id_complete_cycle.complete_next_tick(new_story_id);
 
-    let top_stories = curr_stories.clone().persist().fold_commutative_idempotent(
+    let _top_stories = curr_stories.clone().persist().fold_commutative_idempotent(
         q!(|| vec![]),
         q!(
-            |vec, (api_key, ((client_id, title, timestamp), username))| {
+            |vec, (_api_key, ((_client_id, title, timestamp), username))| {
                 let new_elem = (title, timestamp, username);
                 // TODO: Use a binary heap
                 // TODO: Create a struct that is ordered by timestamp

@@ -35,34 +35,24 @@ fn sha256(n: u32) -> u32 {
 
 pub fn get_graph_function<'a>(name: &str) -> impl GraphFunction<'a> {
     match name {
-        "mapH_mapH_mapH_mapH" => mapH_mapH_mapH_mapH,
-        "mapH_mapH_mapH_mapL" => mapH_mapH_mapH_mapL,
-        "mapH_mapH_mapL_mapH" => mapH_mapH_mapL_mapH,
-        "mapH_mapL_mapH_mapH" => mapH_mapL_mapH_mapH,
-        "mapL_mapH_mapH_mapH" => mapL_mapH_mapH_mapH,
-        "mapH_mapH_mapL_mapL" => mapH_mapH_mapL_mapL,
-        "mapH_mapL_mapH_mapL" => mapH_mapL_mapH_mapL,
-        "mapL_mapH_mapH_mapL" => mapL_mapH_mapH_mapL,
-        "mapL_mapH_mapL_mapH" => mapL_mapH_mapL_mapH,
-        "mapH_mapL_mapL_mapH" => mapH_mapL_mapL_mapH,
-        "mapL_mapL_mapH_mapH" => mapL_mapL_mapH_mapH,
-        "mapH_mapL_mapL_mapL" => mapH_mapL_mapL_mapL,
-        "mapL_mapH_mapL_mapL" => mapL_mapH_mapL_mapL,
-        "mapL_mapL_mapH_mapL" => mapL_mapL_mapH_mapL,
-        "mapL_mapL_mapL_mapH" => mapL_mapL_mapL_mapH,
+        "mapH_mapH_mapH" => map_h_map_h_map_h,
+        "mapH_mapH_mapL" => map_h_map_h_map_l,
+        "mapH_mapL_mapH" => map_h_map_l_map_h,
+        "mapL_mapH_mapH" => map_l_map_h_map_h,
+        "mapH_mapL_mapL" => map_h_map_l_map_l,
+        "mapL_mapH_mapL" => map_l_map_h_map_l,
+        "mapL_mapL_mapH" => map_l_map_l_map_h,
+        "mapL_mapL_mapL" => map_l_map_l_map_l,
         _ => unimplemented!(),
     }
 }
 
-pub fn mapH_mapH_mapH_mapH<'a>(
+#[expect(clippy::type_complexity, reason = "internal simple graphs code // TODO")]
+pub fn map_h_map_h_map_h<'a>(
     _server: &Cluster<'a, Server>,
     payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id,
             (virt_client_id, self::sha256(n))
@@ -77,15 +67,12 @@ pub fn mapH_mapH_mapH_mapH<'a>(
         )))
 }
 
-pub fn mapH_mapH_mapH_mapL<'a>(
+#[expect(clippy::type_complexity, reason = "internal simple graphs code // TODO")]
+pub fn map_h_map_h_map_l<'a>(
     _server: &Cluster<'a, Server>,
     payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id,
             (virt_client_id, self::sha256(n))
@@ -100,15 +87,12 @@ pub fn mapH_mapH_mapH_mapL<'a>(
         )))
 }
 
-pub fn mapH_mapH_mapL_mapH<'a>(
+#[expect(clippy::type_complexity, reason = "internal simple graphs code // TODO")]
+pub fn map_h_map_l_map_h<'a>(
     _server: &Cluster<'a, Server>,
     payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id,
             (virt_client_id, self::sha256(n))
@@ -123,15 +107,12 @@ pub fn mapH_mapH_mapL_mapH<'a>(
         )))
 }
 
-pub fn mapH_mapL_mapH_mapH<'a>(
+#[expect(clippy::type_complexity, reason = "internal simple graphs code // TODO")]
+pub fn map_l_map_h_map_h<'a>(
     _server: &Cluster<'a, Server>,
     payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id,
             (virt_client_id, self::sha256(n % 2))
@@ -146,38 +127,12 @@ pub fn mapH_mapL_mapH_mapH<'a>(
         )))
 }
 
-pub fn mapL_mapH_mapH_mapH<'a>(
+#[expect(clippy::type_complexity, reason = "internal simple graphs code // TODO")]
+pub fn map_h_map_l_map_l<'a>(
     _server: &Cluster<'a, Server>,
     payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-}
-
-pub fn mapH_mapH_mapL_mapL<'a>(
-    _server: &Cluster<'a, Server>,
-    payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
-    payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id,
             (virt_client_id, self::sha256(n))
@@ -192,15 +147,12 @@ pub fn mapH_mapH_mapL_mapL<'a>(
         )))
 }
 
-pub fn mapH_mapL_mapH_mapL<'a>(
+#[expect(clippy::type_complexity, reason = "internal simple graphs code // TODO")]
+pub fn map_l_map_h_map_l<'a>(
     _server: &Cluster<'a, Server>,
     payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id,
             (virt_client_id, self::sha256(n % 2))
@@ -215,61 +167,12 @@ pub fn mapH_mapL_mapH_mapL<'a>(
         )))
 }
 
-pub fn mapL_mapH_mapH_mapL<'a>(
+#[expect(clippy::type_complexity, reason = "internal simple graphs code // TODO")]
+pub fn map_l_map_l_map_h<'a>(
     _server: &Cluster<'a, Server>,
     payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-}
-
-pub fn mapL_mapH_mapL_mapH<'a>(
-    _server: &Cluster<'a, Server>,
-    payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
-    payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-}
-
-pub fn mapH_mapL_mapL_mapH<'a>(
-    _server: &Cluster<'a, Server>,
-    payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
-    payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id,
             (virt_client_id, self::sha256(n % 2))
@@ -284,99 +187,8 @@ pub fn mapH_mapL_mapL_mapH<'a>(
         )))
 }
 
-pub fn mapL_mapL_mapH_mapH<'a>(
-    _server: &Cluster<'a, Server>,
-    payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
-    payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-}
-
-pub fn mapH_mapL_mapL_mapL<'a>(
-    _server: &Cluster<'a, Server>,
-    payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
-    payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-}
-
-pub fn mapL_mapH_mapL_mapL<'a>(
-    _server: &Cluster<'a, Server>,
-    payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
-    payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-}
-
-pub fn mapL_mapL_mapH_mapL<'a>(
-    _server: &Cluster<'a, Server>,
-    payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
-    payloads
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n % 2))
-        )))
-}
-
-pub fn mapL_mapL_mapL_mapH<'a>(
+#[expect(clippy::type_complexity, reason = "internal simple graphs code // TODO")]
+pub fn map_l_map_l_map_l<'a>(
     _server: &Cluster<'a, Server>,
     payloads: Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(ClusterId<Client>, (u32, u32)), Cluster<'a, Server>, Unbounded, NoOrder> {
@@ -392,9 +204,5 @@ pub fn mapL_mapL_mapL_mapH<'a>(
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id,
             (virt_client_id, self::sha256(n % 2))
-        )))
-        .map(q!(|(client_id, (virt_client_id, n))| (
-            client_id,
-            (virt_client_id, self::sha256(n))
         )))
 }
