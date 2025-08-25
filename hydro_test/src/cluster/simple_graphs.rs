@@ -84,7 +84,6 @@ pub fn map_h_map_l_map_h<'a>(
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
 }
 
-
 pub fn map_l_map_h_map_h<'a>(
     _server: &Cluster<'a, Server>,
     payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
@@ -97,7 +96,6 @@ pub fn map_l_map_h_map_h<'a>(
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
 }
-
 
 pub fn map_h_map_l_map_l<'a>(
     _server: &Cluster<'a, Server>,
@@ -115,7 +113,6 @@ pub fn map_h_map_l_map_l<'a>(
         )))
 }
 
-
 pub fn map_l_map_h_map_l<'a>(
     _server: &Cluster<'a, Server>,
     payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
@@ -131,7 +128,6 @@ pub fn map_l_map_h_map_l<'a>(
             self::sha256(n % 2)
         )))
 }
-
 
 pub fn map_l_map_l_map_h<'a>(
     _server: &Cluster<'a, Server>,
@@ -162,6 +158,77 @@ pub fn map_l_map_l_map_l<'a>(
             virt_client_id,
             self::sha256(n % 2)
         )))
+        .map(q!(|(virt_client_id, n)| (
+            virt_client_id,
+            self::sha256(n % 2)
+        )))
+}
+
+pub fn map_l_first_map_l_second_union<'a>(
+    server: &Cluster<'a, Server>,
+    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    let nondet = nondet!(/** test */);
+    let tick = server.tick();
+    let map_l1 = payloads
+        .clone()
+        .map(q!(|(virt_client_id, n)| (
+            virt_client_id,
+            self::sha256(n % 2)
+        )))
+        .entries()
+        .batch(&tick, nondet);
+    let map_l2 = payloads
+        .map(q!(|(virt_client_id, n)| (
+            virt_client_id,
+            self::sha256(n % 2)
+        )))
+        .entries()
+        .batch(&tick, nondet);
+    map_l1.chain(map_l2).all_ticks().into_keyed()
+}
+
+pub fn map_l_map_l_first_payload_second_union<'a>(
+    server: &Cluster<'a, Server>,
+    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    let nondet = nondet!(/** test */);
+    let tick = server.tick();
+    let map_l_map_l = payloads
+        .clone()
+        .map(q!(|(virt_client_id, n)| (
+            virt_client_id,
+            self::sha256(n % 2)
+        )))
+        .map(q!(|(virt_client_id, n)| (
+            virt_client_id,
+            self::sha256(n % 2)
+        )))
+        .entries()
+        .batch(&tick, nondet);
+    let ticked_payloads = payloads.entries().batch(&tick, nondet);
+    map_l_map_l.chain(ticked_payloads).all_ticks().into_keyed()
+}
+
+pub fn map_l_first_payload_second_union_map_l<'a>(
+    server: &Cluster<'a, Server>,
+    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    let nondet = nondet!(/** test */);
+    let tick = server.tick();
+    let map_l = payloads
+        .clone()
+        .map(q!(|(virt_client_id, n)| (
+            virt_client_id,
+            self::sha256(n % 2)
+        )))
+        .entries()
+        .batch(&tick, nondet);
+    let ticked_payloads = payloads.entries().batch(&tick, nondet);
+    map_l
+        .chain(ticked_payloads)
+        .all_ticks()
+        .into_keyed()
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
             self::sha256(n % 2)
