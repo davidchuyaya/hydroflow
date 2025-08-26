@@ -40,7 +40,8 @@ async fn main() {
     let network = Arc::new(RwLock::new(GcpNetwork::new(&project, None)));
 
     let mut builder = hydro_lang::FlowBuilder::new();
-    let num_clients_per_node = 500;
+    let num_clients = 2;
+    let num_clients_per_node = 100;
     let graph_function = get_graph_function(&args.function);
     let server = builder.cluster();
     let clients = builder.cluster();
@@ -63,7 +64,7 @@ async fn main() {
         (
             clients.id().raw_id(),
             std::any::type_name::<Client>().to_string(),
-            1,
+            num_clients,
         ),
     ];
     let processes = vec![(
@@ -80,7 +81,7 @@ async fn main() {
     };
 
     let num_times_to_optimize = 2;
-    let num_seconds_to_profile = 20;
+    let num_seconds_to_profile = None; // Some(20);
 
     for i in 0..num_times_to_optimize {
         let (rewritten_ir_builder, mut ir, mut decoupler, bottleneck_name, bottleneck_num_nodes) =
@@ -94,7 +95,7 @@ async fn main() {
                     std::any::type_name::<Client>().to_string(),
                     std::any::type_name::<Aggregator>().to_string(),
                 ],
-                Some(num_seconds_to_profile),
+                num_seconds_to_profile,
             )
             .await;
 
