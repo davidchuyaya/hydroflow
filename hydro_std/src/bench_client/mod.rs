@@ -159,7 +159,11 @@ where
             q!(|| (0, { RollingAverage::new() })),
             q!(|(total, stats), (batch_size, reset)| {
                 if reset {
-                    if *total > 0 {
+                    // Add throughput to samples if
+                    // 1. Throughput is positive
+                    // 2. Throughput WAS positive (and dropped to 0 at some point)
+                    // Avoids counting throughput while the system initializes, but doesn't discount later dips in throughput
+                    if *total > 0 || stats.sample_count() > 0 {
                         stats.add_sample(*total as f64);
                     }
 
