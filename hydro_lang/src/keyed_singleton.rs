@@ -10,7 +10,7 @@ use crate::stream::ExactlyOnce;
 use crate::unsafety::NonDet;
 use crate::{
     Atomic, Bounded, KeyedStream, Location, NoOrder, Optional, Singleton, Stream, Tick, TotalOrder,
-    nondet,
+    Unbounded, nondet,
 };
 
 pub struct KeyedSingleton<K, V, Loc, Bound> {
@@ -107,6 +107,17 @@ impl<'a, K, V, L: Location<'a>, B> KeyedSingleton<K, V, L, B> {
     pub fn key_count(self) -> Singleton<usize, L, B> {
         self.underlying.count()
     }
+
+    /// An operator which allows you to "name" a `HydroNode`.
+    /// This is only used for testing, to correlate certain `HydroNode`s with IDs.
+    pub fn ir_node_named(self, name: &str) -> KeyedSingleton<K, V, L, B> {
+        {
+            let mut node = self.underlying.ir_node.borrow_mut();
+            let metadata = node.metadata_mut();
+            metadata.tag = Some(name.to_string());
+        }
+        self
+    }
 }
 
 impl<'a, K: Hash + Eq, V, L: Location<'a>> KeyedSingleton<K, V, Tick<L>, Bounded> {
@@ -177,6 +188,16 @@ impl<'a, K: Hash + Eq, V, L: Location<'a>> KeyedSingleton<K, V, Tick<L>, Bounded
             .weaker_retries()
             .join(with.entries())
             .into_keyed()
+    }
+
+    pub fn latest(self) -> KeyedSingleton<K, V, L, Unbounded> {
+        KeyedSingleton {
+            underlying: Stream::new(
+                self.underlying.location.outer().clone(),
+                // no need to persist due to top-level replay
+                self.underlying.ir_node.into_inner(),
+            ),
+        }
     }
 }
 

@@ -964,6 +964,7 @@ pub struct HydroIrMetadata {
     pub cpu_usage: Option<f64>,
     pub network_recv_cpu_usage: Option<f64>,
     pub id: Option<usize>,
+    pub tag: Option<String>,
 }
 
 // HydroIrMetadata shouldn't be used to hash or compare
@@ -1203,7 +1204,13 @@ impl HydroNode {
                 _ => {
                     self.input_metadata().iter().for_each(|i| {
                         if i.location_kind.root() != self_location {
-                            panic!("Mismatching IR locations, node: {:?}", self)
+                            panic!(
+                                "Mismatching IR locations, child: {:?} ({:?}) of: {:?} ({:?})",
+                                i,
+                                i.location_kind.root(),
+                                self,
+                                self_location
+                            )
                         }
                     });
                 }
@@ -2987,12 +2994,12 @@ mod test {
 
     #[test]
     fn hydro_node_size() {
-        insta::assert_snapshot!(size_of::<HydroNode>(), @"208");
+        assert_eq!(size_of::<HydroNode>(), 232);
     }
 
     #[test]
     fn hydro_leaf_size() {
-        insta::assert_snapshot!(size_of::<HydroLeaf>(), @"200");
+        assert_eq!(size_of::<HydroLeaf>(), 224);
     }
 
     #[test]
@@ -3010,7 +3017,7 @@ mod test {
         let result = simplify_q_macro(stageleft_call);
         // This should be processed by our visitor and simplified to q!(...)
         // since we detect the stageleft::runtime_support::fn_* pattern
-        insta::assert_snapshot!(result.to_token_stream().to_string());
+        hydro_build_utils::assert_snapshot!(result.to_token_stream().to_string());
     }
 
     #[test]
@@ -3022,6 +3029,6 @@ mod test {
         })
         .splice_fn1_ctx(&());
         let result = simplify_q_macro(stageleft_call);
-        insta::assert_snapshot!(result.to_token_stream().to_string());
+        hydro_build_utils::assert_snapshot!(result.to_token_stream().to_string());
     }
 }

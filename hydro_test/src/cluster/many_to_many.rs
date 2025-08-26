@@ -4,7 +4,7 @@ pub fn many_to_many<'a>(flow: &FlowBuilder<'a>) -> Cluster<'a, ()> {
     let cluster = flow.cluster();
     cluster
         .source_iter(q!(0..2))
-        .broadcast_bincode(&cluster)
+        .broadcast_bincode(&cluster, nondet!(/** test */))
         .entries()
         .for_each(q!(|n| println!("cluster received: {:?}", n)));
 
@@ -22,7 +22,7 @@ mod tests {
         let _ = super::many_to_many(&builder);
         let built = builder.finalize();
 
-        insta::assert_debug_snapshot!(built.ir());
+        hydro_build_utils::assert_debug_snapshot!(built.ir());
     }
 
     #[tokio::test]

@@ -1,3 +1,4 @@
+use hydro_lang::location::MembershipEvent;
 use hydro_lang::*;
 use hydro_std::compartmentalize::{DecoupleClusterStream, DecoupleProcessStream, PartitionStream};
 use stageleft::IntoQuotedMut;
@@ -51,7 +52,13 @@ pub fn simple_cluster<'a>(flow: &FlowBuilder<'a>) -> (Process<'a, ()>, Cluster<'
     let cluster = flow.cluster();
 
     let numbers = process.source_iter(q!(0..5));
-    let ids = process.source_iter(cluster.members()).map(q!(|&id| id));
+    let ids = process
+        .source_cluster_members(&cluster)
+        .entries()
+        .filter_map(q!(|(i, e)| match e {
+            MembershipEvent::Joined => Some(i),
+            MembershipEvent::Left => None,
+        }));
 
     ids.cross_product(numbers)
         .map(q!(|(id, n)| (id, (id, n))))
@@ -84,7 +91,7 @@ mod tests {
         let _ = super::simple_cluster(&builder);
         let built = builder.finalize();
 
-        insta::assert_debug_snapshot!(built.ir());
+        hydro_build_utils::assert_debug_snapshot!(built.ir());
     }
 
     #[tokio::test]
@@ -269,11 +276,13 @@ mod tests {
             .optimize_with(|leaves| partitioner::partition(leaves, &partitioner))
             .into_deploy::<HydroDeploy>();
 
-        insta::assert_debug_snapshot!(built.ir());
+        hydro_build_utils::assert_debug_snapshot!(built.ir());
 
         for (id, ir) in built.preview_compile().all_dfir() {
-            insta::with_settings!({snapshot_suffix => format!("surface_graph_{id}")}, {
-                insta::assert_snapshot!(ir.surface_syntax_string());
+            hydro_build_utils::insta::with_settings!({
+                snapshot_suffix => format!("surface_graph_{id}")
+            }, {
+                hydro_build_utils::assert_snapshot!(ir.surface_syntax_string());
             });
         }
     }
