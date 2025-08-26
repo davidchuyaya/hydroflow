@@ -22,14 +22,16 @@ impl<'a, F> GraphFunction<'a> for F where
 }
 
 fn sha256(n: u32) -> u32 {
-    let mut sha = Sha256::new();
-    if n > 1 {
-        // Recursively hash n times
-        sha.update(sha256(n - 1).to_be_bytes());
+    let mut sha_input = n;
+    
+    for _ in 0..n {
+        let mut sha = Sha256::new();
+        sha.update(sha_input.to_be_bytes());
+        let sha_output = sha.finalize();
+        sha_input = sha_output[0].into();
     }
-    sha.update(n.to_be_bytes());
-    let out = sha.finalize();
-    out[0].into() // Only take the 
+
+    sha_input
 }
 
 // Note: H = high load, L = low load
@@ -77,9 +79,9 @@ pub fn map_h_map_h_map_h<'a>(
     payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
 }
 
 pub fn map_h_map_h_map_l<'a>(
@@ -87,11 +89,11 @@ pub fn map_h_map_h_map_l<'a>(
     payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
 }
 
@@ -100,12 +102,12 @@ pub fn map_h_map_l_map_h<'a>(
     payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
 }
 
 pub fn map_l_map_h_map_h<'a>(
@@ -115,10 +117,10 @@ pub fn map_l_map_h_map_h<'a>(
     payloads
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
 }
 
 pub fn map_h_map_l_map_l<'a>(
@@ -126,14 +128,14 @@ pub fn map_h_map_l_map_l<'a>(
     payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
 ) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
 }
 
@@ -144,12 +146,12 @@ pub fn map_l_map_h_map_l<'a>(
     payloads
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
 }
 
@@ -160,13 +162,13 @@ pub fn map_l_map_l_map_h<'a>(
     payloads
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
-        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(n))))
+        .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
 }
 
 pub fn map_l_map_l_map_l<'a>(
@@ -176,15 +178,15 @@ pub fn map_l_map_l_map_l<'a>(
     payloads
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
 }
 
@@ -196,12 +198,12 @@ pub fn map_l_first_map_l_second_union<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )));
     let map_l2 = payloads
         .map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )));
     map_l1.interleave(map_l2).filter_map(q!(|(virt_client_id_opt, n)| {
         // Since we cloned payloads, delete half the payloads so 1 input = 1 output
@@ -221,12 +223,12 @@ pub fn map_l_first_map_h_second_union<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )));
     let map_h2 = payloads
         .map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )));
     map_l1.interleave(map_h2).filter_map(q!(|(virt_client_id_opt, n)| {
         // Since we cloned payloads, delete half the payloads so 1 input = 1 output
@@ -246,12 +248,12 @@ pub fn map_h_first_map_l_second_union<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )));
     let map_l2 = payloads
         .map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )));
     map_h1.interleave(map_l2).filter_map(q!(|(virt_client_id_opt, n)| {
         // Since we cloned payloads, delete half the payloads so 1 input = 1 output
@@ -271,12 +273,12 @@ pub fn map_h_first_map_h_second_union<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )));
     let map_h2 = payloads
         .map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )));
     map_h1.interleave(map_h2).filter_map(q!(|(virt_client_id_opt, n)| {
         // Since we cloned payloads, delete half the payloads so 1 input = 1 output
@@ -296,11 +298,11 @@ pub fn map_l_map_l_first_payload_second_union<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None::<u32>,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .map(q!(|(_virt_client_id, n)| (
             None,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .interleave(payloads.map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
@@ -324,11 +326,11 @@ pub fn map_l_map_h_first_payload_second_union<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None::<u32>,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .map(q!(|(_virt_client_id, n)| (
             None,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .interleave(payloads.map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
@@ -352,11 +354,11 @@ pub fn map_h_map_l_first_payload_second_union<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None::<u32>,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .map(q!(|(_virt_client_id, n)| (
             None,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .interleave(payloads.map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
@@ -380,11 +382,11 @@ pub fn map_h_map_h_first_payload_second_union<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None::<u32>,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .map(q!(|(_virt_client_id, n)| (
             None,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .interleave(payloads.map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
@@ -408,14 +410,14 @@ pub fn map_l_first_payload_second_union_map_l<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None::<u32>,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .interleave(payloads.map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
             n
         ))))
         .filter_map(q!(|(virt_client_id_opt, n)| {
-            let sha = self::sha256(n % 2);
+            let sha = self::sha256(n % 2 + 1);
             // Since we cloned payloads, delete half the payloads so 1 input = 1 output
             if let Some(virt_client_id) = virt_client_id_opt {
                 Some((virt_client_id, sha))
@@ -433,14 +435,14 @@ pub fn map_l_first_payload_second_union_map_h<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None::<u32>,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .interleave(payloads.map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
             n
         ))))
         .filter_map(q!(|(virt_client_id_opt, n)| {
-            let sha = self::sha256(n);
+            let sha = self::sha256(100 + n % 2);
             // Since we cloned payloads, delete half the payloads so 1 input = 1 output
             if let Some(virt_client_id) = virt_client_id_opt {
                 Some((virt_client_id, sha))
@@ -458,14 +460,14 @@ pub fn map_h_first_payload_second_union_map_l<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None::<u32>,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .interleave(payloads.map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
             n
         ))))
         .filter_map(q!(|(virt_client_id_opt, n)| {
-            let sha = self::sha256(n % 2);
+            let sha = self::sha256(n % 2 + 1);
             // Since we cloned payloads, delete half the payloads so 1 input = 1 output
             if let Some(virt_client_id) = virt_client_id_opt {
                 Some((virt_client_id, sha))
@@ -483,14 +485,14 @@ pub fn map_h_first_payload_second_union_map_h<'a>(
         .clone()
         .map(q!(|(_virt_client_id, n)| (
             None::<u32>,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .interleave(payloads.map(q!(|(virt_client_id, n)| (
             Some(virt_client_id),
             n
         ))))
         .filter_map(q!(|(virt_client_id_opt, n)| {
-            let sha = self::sha256(n);
+            let sha = self::sha256(100 + n % 2);
             // Since we cloned payloads, delete half the payloads so 1 input = 1 output
             if let Some(virt_client_id) = virt_client_id_opt {
                 Some((virt_client_id, sha))
@@ -515,7 +517,7 @@ pub fn map_l_first_map_l_second_anti_join<'a>(
         .entries()
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id, virt_client_id, false,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .interleave(true_payloads) // The actual payloads that will pass the anti_join
         .batch(&tick, nondet);
@@ -523,7 +525,7 @@ pub fn map_l_first_map_l_second_anti_join<'a>(
         .entries()
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id, virt_client_id, false,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .batch(&tick, nondet);
     map_l1.filter_not_in(map_l2).all_ticks().filter_map(q!(|(client_id, virt_client_id, keep, n)| {
@@ -550,7 +552,7 @@ pub fn map_l_first_map_h_second_anti_join<'a>(
         .entries()
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id, virt_client_id, false,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .interleave(true_payloads) // The actual payloads that will pass the anti_join
         .batch(&tick, nondet);
@@ -558,7 +560,7 @@ pub fn map_l_first_map_h_second_anti_join<'a>(
         .entries()
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id, virt_client_id, false,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .batch(&tick, nondet);
     map_l1.filter_not_in(map_h2).all_ticks().filter_map(q!(|(client_id, virt_client_id, keep, n)| {
@@ -585,7 +587,7 @@ pub fn map_h_first_map_l_second_anti_join<'a>(
         .entries()
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id, virt_client_id, false,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .interleave(true_payloads) // The actual payloads that will pass the anti_join
         .batch(&tick, nondet);
@@ -593,7 +595,7 @@ pub fn map_h_first_map_l_second_anti_join<'a>(
         .entries()
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id, virt_client_id, false,
-            self::sha256(n % 2)
+            self::sha256(n % 2 + 1)
         )))
         .batch(&tick, nondet);
     map_h1.filter_not_in(map_l2).all_ticks().filter_map(q!(|(client_id, virt_client_id, keep, n)| {
@@ -620,7 +622,7 @@ pub fn map_h_first_map_h_second_anti_join<'a>(
         .entries()
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id, virt_client_id, false,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .interleave(true_payloads) // The actual payloads that will pass the anti_join
         .batch(&tick, nondet);
@@ -628,7 +630,7 @@ pub fn map_h_first_map_h_second_anti_join<'a>(
         .entries()
         .map(q!(|(client_id, (virt_client_id, n))| (
             client_id, virt_client_id, false,
-            self::sha256(n)
+            self::sha256(100 + n % 2)
         )))
         .batch(&tick, nondet);
     map_h1.filter_not_in(map_h2).all_ticks().filter_map(q!(|(client_id, virt_client_id, keep, n)| {
@@ -653,10 +655,10 @@ pub fn map_l_map_l_first_payload_second_anti_join<'a>(
     false_payloads
         .clone()
         .map(q!(|(client_id, virt_client_id, n, _keep)| (
-            client_id, virt_client_id, self::sha256(n % 2), true
+            client_id, virt_client_id, self::sha256(n % 2 + 1), true
         )))
         .map(q!(|(client_id, virt_client_id, n, _keep)| (
-            client_id, virt_client_id, self::sha256(n % 2), true
+            client_id, virt_client_id, self::sha256(n % 2 + 1), true
         )))
         .interleave(false_payloads.clone())
         .batch(&tick, nondet)
@@ -685,10 +687,10 @@ pub fn map_l_map_h_first_payload_second_anti_join<'a>(
     false_payloads
         .clone()
         .map(q!(|(client_id, virt_client_id, n, _keep)| (
-            client_id, virt_client_id, self::sha256(n % 2), true
+            client_id, virt_client_id, self::sha256(n % 2 + 1), true
         )))
         .map(q!(|(client_id, virt_client_id, n, _keep)| (
-            client_id, virt_client_id, self::sha256(n), true
+            client_id, virt_client_id, self::sha256(100 + n % 2), true
         )))
         .interleave(false_payloads.clone())
         .batch(&tick, nondet)
@@ -717,10 +719,10 @@ pub fn map_h_map_l_first_payload_second_anti_join<'a>(
     false_payloads
         .clone()
         .map(q!(|(client_id, virt_client_id, n, _keep)| (
-            client_id, virt_client_id, self::sha256(n), true
+            client_id, virt_client_id, self::sha256(100 + n % 2), true
         )))
         .map(q!(|(client_id, virt_client_id, n, _keep)| (
-            client_id, virt_client_id, self::sha256(n % 2), true
+            client_id, virt_client_id, self::sha256(n % 2 + 1), true
         )))
         .interleave(false_payloads.clone())
         .batch(&tick, nondet)
@@ -749,10 +751,10 @@ pub fn map_h_map_h_first_payload_second_anti_join<'a>(
     false_payloads
         .clone()
         .map(q!(|(client_id, virt_client_id, n, _keep)| (
-            client_id, virt_client_id, self::sha256(n), true
+            client_id, virt_client_id, self::sha256(100 + n % 2), true
         )))
         .map(q!(|(client_id, virt_client_id, n, _keep)| (
-            client_id, virt_client_id, self::sha256(n), true
+            client_id, virt_client_id, self::sha256(100 + n % 2), true
         )))
         .interleave(false_payloads.clone())
         .batch(&tick, nondet)
@@ -782,7 +784,7 @@ pub fn map_l_first_payload_second_anti_join_map_l<'a>(
     false_payloads
         .clone()
         .map(q!(|(client, virt_client_id, n, _keep)| (
-            client, virt_client_id, self::sha256(n % 2), true
+            client, virt_client_id, self::sha256(n % 2 + 1), true
         )))
         .interleave(false_payloads.clone())
         .batch(&tick, nondet)
@@ -790,7 +792,7 @@ pub fn map_l_first_payload_second_anti_join_map_l<'a>(
         .all_ticks()
         .filter_map(q!(|(client, virt_client_id, n, keep)| {
             if keep {
-                Some((client, (virt_client_id, self::sha256(n % 2))))
+                Some((client, (virt_client_id, self::sha256(n % 2 + 1))))
             } else {
                 None
             }
@@ -812,7 +814,7 @@ pub fn map_l_first_payload_second_anti_join_map_h<'a>(
     false_payloads
         .clone()
         .map(q!(|(client, virt_client_id, n, _keep)| (
-            client, virt_client_id, self::sha256(n % 2), true
+            client, virt_client_id, self::sha256(n % 2 + 1), true
         )))
         .interleave(false_payloads.clone())
         .batch(&tick, nondet)
@@ -820,7 +822,7 @@ pub fn map_l_first_payload_second_anti_join_map_h<'a>(
         .all_ticks()
         .filter_map(q!(|(client, virt_client_id, n, keep)| {
             if keep {
-                Some((client, (virt_client_id, self::sha256(n))))
+                Some((client, (virt_client_id, self::sha256(100 + n % 2))))
             } else {
                 None
             }
@@ -842,7 +844,7 @@ pub fn map_h_first_payload_second_anti_join_map_l<'a>(
     false_payloads
         .clone()
         .map(q!(|(client, virt_client_id, n, _keep)| (
-            client, virt_client_id, self::sha256(n), true
+            client, virt_client_id, self::sha256(100 + n % 2), true
         )))
         .interleave(false_payloads.clone())
         .batch(&tick, nondet)
@@ -850,7 +852,7 @@ pub fn map_h_first_payload_second_anti_join_map_l<'a>(
         .all_ticks()
         .filter_map(q!(|(client, virt_client_id, n, keep)| {
             if keep {
-                Some((client, (virt_client_id, self::sha256(n % 2))))
+                Some((client, (virt_client_id, self::sha256(n % 2 + 1))))
             } else {
                 None
             }
@@ -872,7 +874,7 @@ pub fn map_h_first_payload_second_anti_join_map_h<'a>(
     false_payloads
         .clone()
         .map(q!(|(client, virt_client_id, n, _keep)| (
-            client, virt_client_id, self::sha256(n), true
+            client, virt_client_id, self::sha256(100 + n % 2), true
         )))
         .interleave(false_payloads.clone())
         .batch(&tick, nondet)
@@ -880,7 +882,7 @@ pub fn map_h_first_payload_second_anti_join_map_h<'a>(
         .all_ticks()
         .filter_map(q!(|(client, virt_client_id, n, keep)| {
             if keep {
-                Some((client, (virt_client_id, self::sha256(n))))
+                Some((client, (virt_client_id, self::sha256(100 + n % 2))))
             } else {
                 None
             }
