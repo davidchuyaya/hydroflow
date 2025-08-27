@@ -40,7 +40,7 @@ async fn main() {
     let network = Arc::new(RwLock::new(GcpNetwork::new(&project, None)));
 
     let mut builder = hydro_lang::FlowBuilder::new();
-    let num_clients = 2;
+    let num_clients = 20;
     let num_clients_per_node = 100;
     let graph_function = get_graph_function(&args.function);
     let server = builder.cluster();

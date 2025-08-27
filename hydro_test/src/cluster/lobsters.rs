@@ -40,35 +40,35 @@ impl PartialOrd for Story {
 )]
 pub fn lobsters<'a, Client>(
     server: &Process<'a, Server>,
-    add_user: Stream<(ClusterId<Client>, String), Process<'a, Server>, Unbounded, NoOrder>,
-    get_users: Stream<ClusterId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
+    add_user: Stream<(MemberId<Client>, String), Process<'a, Server>, Unbounded, NoOrder>,
+    get_users: Stream<MemberId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
     add_story: Stream<
-        (ClusterId<Client>, (String, String, Instant)),
+        (MemberId<Client>, (String, String, Instant)),
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
     _add_comment: Stream<
-        (ClusterId<Client>, (String, u32, String, Instant)),
+        (MemberId<Client>, (String, u32, String, Instant)),
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
     _upvote_story: Stream<
-        (ClusterId<Client>, (String, u32)),
+        (MemberId<Client>, (String, u32)),
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
     _upvote_comment: Stream<
-        (ClusterId<Client>, (String, u32)),
+        (MemberId<Client>, (String, u32)),
         Process<'a, Server>,
         Unbounded,
         NoOrder,
     >,
-    _get_stories: Stream<ClusterId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
-    _get_comments: Stream<ClusterId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
-    _get_story_comments: Stream<(ClusterId<Client>, u32), Process<'a, Server>, Unbounded, NoOrder>,
+    _get_stories: Stream<MemberId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
+    _get_comments: Stream<MemberId<Client>, Process<'a, Server>, Unbounded, NoOrder>,
+    _get_story_comments: Stream<(MemberId<Client>, u32), Process<'a, Server>, Unbounded, NoOrder>,
 ) {
     let user_auth_tick = server.tick();
     let stories_tick = server.tick();

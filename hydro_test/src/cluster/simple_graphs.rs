@@ -7,17 +7,17 @@ pub struct Server {}
 pub trait GraphFunction<'a>:
     Fn(
     &Cluster<'a, Server>,
-    KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>
+    KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>
 {
 }
 
 impl<'a, F> GraphFunction<'a> for F where
     F: Fn(
         &Cluster<'a, Server>,
-        KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+        KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
     )
-        -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>
+        -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>
 {
 }
 
@@ -76,8 +76,8 @@ pub fn get_graph_function<'a>(name: &str) -> impl GraphFunction<'a> {
 
 pub fn map_h_map_h_map_h<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
@@ -86,8 +86,8 @@ pub fn map_h_map_h_map_h<'a>(
 
 pub fn map_h_map_h_map_l<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
@@ -99,8 +99,8 @@ pub fn map_h_map_h_map_l<'a>(
 
 pub fn map_h_map_l_map_h<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
         .map(q!(|(virt_client_id, n)| (
@@ -112,8 +112,8 @@ pub fn map_h_map_l_map_h<'a>(
 
 pub fn map_l_map_h_map_h<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
@@ -125,8 +125,8 @@ pub fn map_l_map_h_map_h<'a>(
 
 pub fn map_h_map_l_map_l<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .map(q!(|(virt_client_id, n)| (virt_client_id, self::sha256(100 + n % 2))))
         .map(q!(|(virt_client_id, n)| (
@@ -141,8 +141,8 @@ pub fn map_h_map_l_map_l<'a>(
 
 pub fn map_l_map_h_map_l<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
@@ -157,8 +157,8 @@ pub fn map_l_map_h_map_l<'a>(
 
 pub fn map_l_map_l_map_h<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
@@ -173,8 +173,8 @@ pub fn map_l_map_l_map_h<'a>(
 
 pub fn map_l_map_l_map_l<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .map(q!(|(virt_client_id, n)| (
             virt_client_id,
@@ -192,8 +192,8 @@ pub fn map_l_map_l_map_l<'a>(
 
 pub fn map_l_first_map_l_second_union<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let map_l1 = payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -217,8 +217,8 @@ pub fn map_l_first_map_l_second_union<'a>(
 
 pub fn map_l_first_map_h_second_union<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let map_l1 = payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -242,8 +242,8 @@ pub fn map_l_first_map_h_second_union<'a>(
 
 pub fn map_h_first_map_l_second_union<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let map_h1 = payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -267,8 +267,8 @@ pub fn map_h_first_map_l_second_union<'a>(
 
 pub fn map_h_first_map_h_second_union<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let map_h1 = payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -292,8 +292,8 @@ pub fn map_h_first_map_h_second_union<'a>(
 
 pub fn map_l_map_l_first_payload_second_union<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -320,8 +320,8 @@ pub fn map_l_map_l_first_payload_second_union<'a>(
 
 pub fn map_l_map_h_first_payload_second_union<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -348,8 +348,8 @@ pub fn map_l_map_h_first_payload_second_union<'a>(
 
 pub fn map_h_map_l_first_payload_second_union<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -376,8 +376,8 @@ pub fn map_h_map_l_first_payload_second_union<'a>(
 
 pub fn map_h_map_h_first_payload_second_union<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -404,8 +404,8 @@ pub fn map_h_map_h_first_payload_second_union<'a>(
 
 pub fn map_l_first_payload_second_union_map_l<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -429,8 +429,8 @@ pub fn map_l_first_payload_second_union_map_l<'a>(
 
 pub fn map_l_first_payload_second_union_map_h<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -454,8 +454,8 @@ pub fn map_l_first_payload_second_union_map_h<'a>(
 
 pub fn map_h_first_payload_second_union_map_l<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -479,8 +479,8 @@ pub fn map_h_first_payload_second_union_map_l<'a>(
 
 pub fn map_h_first_payload_second_union_map_h<'a>(
     _server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     payloads
         .clone()
         .map(q!(|(_virt_client_id, n)| (
@@ -504,8 +504,8 @@ pub fn map_h_first_payload_second_union_map_h<'a>(
 
 pub fn map_l_first_map_l_second_anti_join<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -539,8 +539,8 @@ pub fn map_l_first_map_l_second_anti_join<'a>(
 
 pub fn map_l_first_map_h_second_anti_join<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -574,8 +574,8 @@ pub fn map_l_first_map_h_second_anti_join<'a>(
 
 pub fn map_h_first_map_l_second_anti_join<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -609,8 +609,8 @@ pub fn map_h_first_map_l_second_anti_join<'a>(
 
 pub fn map_h_first_map_h_second_anti_join<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -644,8 +644,8 @@ pub fn map_h_first_map_h_second_anti_join<'a>(
 
 pub fn map_l_map_l_first_payload_second_anti_join<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -676,8 +676,8 @@ pub fn map_l_map_l_first_payload_second_anti_join<'a>(
 
 pub fn map_l_map_h_first_payload_second_anti_join<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -708,8 +708,8 @@ pub fn map_l_map_h_first_payload_second_anti_join<'a>(
 
 pub fn map_h_map_l_first_payload_second_anti_join<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -740,8 +740,8 @@ pub fn map_h_map_l_first_payload_second_anti_join<'a>(
 
 pub fn map_h_map_h_first_payload_second_anti_join<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -772,8 +772,8 @@ pub fn map_h_map_h_first_payload_second_anti_join<'a>(
 
 pub fn map_l_first_payload_second_anti_join_map_l<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -802,8 +802,8 @@ pub fn map_l_first_payload_second_anti_join_map_l<'a>(
 
 pub fn map_l_first_payload_second_anti_join_map_h<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -832,8 +832,8 @@ pub fn map_l_first_payload_second_anti_join_map_h<'a>(
 
 pub fn map_h_first_payload_second_anti_join_map_l<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
@@ -862,8 +862,8 @@ pub fn map_h_first_payload_second_anti_join_map_l<'a>(
 
 pub fn map_h_first_payload_second_anti_join_map_h<'a>(
     server: &Cluster<'a, Server>,
-    payloads: KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
-) -> KeyedStream<ClusterId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
+    payloads: KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder>,
+) -> KeyedStream<MemberId<Client>, (u32, u32), Cluster<'a, Server>, Unbounded, NoOrder> {
     let tick = server.tick();
     let nondet = nondet!(/** Test */);
 
