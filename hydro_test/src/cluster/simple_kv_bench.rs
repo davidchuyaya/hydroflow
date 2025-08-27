@@ -64,12 +64,12 @@ mod tests {
         let built = builder.with_default_optimize::<HydroDeploy>();
 
         hydro_lang::ir::dbg_dedup_tee(|| {
-            insta::assert_debug_snapshot!(built.ir());
+            hydro_build_utils::assert_debug_snapshot!(built.ir());
         });
 
         let preview = built.preview_compile();
-        insta::with_settings!({snapshot_suffix => "kv_mermaid"}, {
-            insta::assert_snapshot!(
+        hydro_build_utils::insta::with_settings!({snapshot_suffix => "kv_mermaid"}, {
+            hydro_build_utils::assert_snapshot!(
                 preview.dfir_for(&kv).to_mermaid(&WriteConfig {
                     no_subgraphs: true,
                     no_pull_push: true,
