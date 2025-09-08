@@ -387,15 +387,20 @@ fn solve(model_metadata: &RefCell<ModelMetadata>) -> MicroLpSolution {
 
     // Which node has the highest CPU usage?
     let highest_cpu = vars.add_variable();
-    constrs.push(constraint!(highest_cpu >= orig_usage));
-    constrs.push(constraint!(highest_cpu >= decoupled_usage));
+    constrs.push(constraint!(highest_cpu >= orig_usage.clone()));
+    constrs.push(constraint!(highest_cpu >= decoupled_usage.clone()));
 
     // Minimize the CPU usage of that node
-    vars.minimise(highest_cpu)
+    let solution = vars.minimise(highest_cpu)
         .using(microlp)
         .with_all(constrs)
         .solve()
-        .unwrap()
+        .unwrap();
+
+    println!("Projected orig_usage after decoupling: {}", solution.eval(orig_usage));
+    println!("Projected decoupled_usage after decoupling: {}", solution.eval(decoupled_usage));
+
+    solution
 }
 
 pub(crate) fn decouple_analysis(
