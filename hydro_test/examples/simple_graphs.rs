@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -40,8 +41,8 @@ async fn main() {
     let network = Arc::new(RwLock::new(GcpNetwork::new(&project, None)));
 
     let mut builder = hydro_lang::FlowBuilder::new();
-    let num_clients = 20;
-    let num_clients_per_node = 100;
+    let num_clients = 10;
+    let num_clients_per_node = 1000;
     let graph_function = get_graph_function(&args.function);
     let server = builder.cluster();
     let clients = builder.cluster();
@@ -81,7 +82,8 @@ async fn main() {
     };
 
     let num_times_to_optimize = 2;
-    let num_seconds_to_profile = None; // Some(20);
+    let num_seconds_to_profile = Some(20);
+    let multi_run_metadata = RefCell::new(vec![]);
 
     for i in 0..num_times_to_optimize {
         let (rewritten_ir_builder, mut ir, mut decoupler, bottleneck_name, bottleneck_num_nodes) =
@@ -96,6 +98,8 @@ async fn main() {
                     std::any::type_name::<Aggregator>().to_string(),
                 ],
                 num_seconds_to_profile,
+                &multi_run_metadata,
+                i,
             )
             .await;
 

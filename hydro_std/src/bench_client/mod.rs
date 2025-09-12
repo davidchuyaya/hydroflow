@@ -71,10 +71,16 @@ where
     // Set up an initial set of payloads on the first tick
     let (new_virtual_client_complete_cycle, new_virtual_client) =
         client_tick.cycle_with_initial(client_tick.singleton(q!(0u32)));
-    new_virtual_client_complete_cycle.complete_next_tick(new_virtual_client.clone().map(q!(|virtual_id| virtual_id + 1)));
+    new_virtual_client_complete_cycle.complete_next_tick(
+        new_virtual_client
+            .clone()
+            .map(q!(|virtual_id| virtual_id + 1)),
+    );
 
     let bounded_virtual_client = new_virtual_client
-        .filter(q!(move |virtual_id| *virtual_id < num_clients_per_node as u32))
+        .filter(q!(
+            move |virtual_id| *virtual_id < num_clients_per_node as u32
+        ))
         .into_stream();
 
     let c_new_payloads_on_start = bounded_virtual_client
@@ -111,8 +117,8 @@ where
     // Track statistics
     let (c_timers_complete_cycle, c_timers) =
         client_tick.cycle::<Stream<(u32, Instant), _, _, NoOrder>>();
-    let c_new_timers_when_leader_elected = bounded_virtual_client
-        .map(q!(|virtual_id| (virtual_id, Instant::now())));
+    let c_new_timers_when_leader_elected =
+        bounded_virtual_client.map(q!(|virtual_id| (virtual_id, Instant::now())));
     let c_updated_timers = c_received_quorum_payloads
         .clone()
         .map(q!(|(key, _payload)| (key, Instant::now())));
@@ -197,7 +203,9 @@ pub fn print_bench_results<'a, Client: 'a, Aggregator>(
     let nondet_sampling = nondet!(/** non-deterministic samping only affects logging */);
     let print_tick = aggregator.tick();
     let client_members = aggregator.source_cluster_members(clients);
-    let client_count = track_membership(client_members).key_count().snapshot(&print_tick, nondet_client_count);
+    let client_count = track_membership(client_members)
+        .key_count()
+        .snapshot(&print_tick, nondet_client_count);
 
     let keyed_throughputs = results
         .throughput
@@ -213,7 +221,8 @@ pub fn print_bench_results<'a, Client: 'a, Aggregator>(
 
     let clients_with_throughputs_count = latest_throughputs
         .clone()
-        .key_count().snapshot(&print_tick, nondet_client_count);
+        .key_count()
+        .snapshot(&print_tick, nondet_client_count);
 
     let combined_throughputs = latest_throughputs
         .snapshot(&aggregator.tick(), nondet_sampling)
@@ -226,12 +235,13 @@ pub fn print_bench_results<'a, Client: 'a, Aggregator>(
     combined_throughputs
         .sample_every(q!(Duration::from_millis(1000)), nondet_sampling)
         .batch(&print_tick, nondet_client_count)
-        .cross_singleton(
-            client_count.clone(),
-        )
+        .cross_singleton(client_count.clone())
         .cross_singleton(clients_with_throughputs_count.clone())
         .all_ticks()
-        .for_each(q!(move |((throughputs, num_client_machines), num_clients_with_throughputs)| {
+        .for_each(q!(move |(
+            (throughputs, num_client_machines),
+            num_clients_with_throughputs,
+        )| {
             if throughputs.sample_count() >= 2 {
                 if num_clients_with_throughputs == num_client_machines {
                     let mean = throughputs.sample_mean() * num_client_machines as f64;
@@ -244,9 +254,11 @@ pub fn print_bench_results<'a, Client: 'a, Aggregator>(
                             upper * num_client_machines as f64
                         );
                     }
-                }
-                else {
-                    println!("Throughput: N/A - N/A - N/A requests/s, awaiting {} clients", num_client_machines - num_clients_with_throughputs);
+                } else {
+                    println!(
+                        "Throughput: N/A - N/A - N/A requests/s, awaiting {} clients",
+                        num_client_machines - num_clients_with_throughputs
+                    );
                 }
             }
         }));
@@ -277,24 +289,29 @@ pub fn print_bench_results<'a, Client: 'a, Aggregator>(
     combined_latencies
         .sample_every(q!(Duration::from_millis(1000)), nondet_sampling)
         .batch(&print_tick, nondet_client_count)
-        .cross_singleton(
-            client_count
-        )
+        .cross_singleton(client_count)
         .cross_singleton(clients_with_throughputs_count)
         .all_ticks()
-        .for_each(q!(move |((latencies, num_client_machines), num_clients_with_throughputs)| {
+        .for_each(q!(move |(
+            (latencies, num_client_machines),
+            num_clients_with_throughputs,
+        )| {
             if num_clients_with_throughputs == num_client_machines {
                 println!(
                     "Latency p50: {:.3} | p99 {:.3} | p999 {:.3} ms ({:} samples)",
-                    Duration::from_nanos(latencies.value_at_quantile(0.5)).as_micros() as f64 / 1000.0,
-                    Duration::from_nanos(latencies.value_at_quantile(0.99)).as_micros() as f64 / 1000.0,
+                    Duration::from_nanos(latencies.value_at_quantile(0.5)).as_micros() as f64
+                        / 1000.0,
+                    Duration::from_nanos(latencies.value_at_quantile(0.99)).as_micros() as f64
+                        / 1000.0,
                     Duration::from_nanos(latencies.value_at_quantile(0.999)).as_micros() as f64
                         / 1000.0,
                     latencies.len()
                 );
-            }
-            else {
-                println!("Latency: p50: N/A | p99 N/A | p999 N/A ms (N/A samples), awaiting {} clients", num_client_machines - num_clients_with_throughputs);
+            } else {
+                println!(
+                    "Latency: p50: N/A | p99 N/A | p999 N/A ms (N/A samples), awaiting {} clients",
+                    num_client_machines - num_clients_with_throughputs
+                );
             }
         }));
 }

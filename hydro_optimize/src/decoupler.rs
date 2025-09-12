@@ -44,19 +44,21 @@ fn add_network(node: &mut HydroNode, new_location: &LocationId) {
     ));
     let cluster_id_type = quote_type::<MemberId<()>>();
     let mapped_output_type: syn::Type = syn::parse_quote!((#cluster_id_type, #output_debug_type));
+    if metadata.orig_id.is_none() {
+        println!(
+            "Warning: Attempting to decouple a node with no orig_id, probably created by an earlier decoupling. This decoupling is unlikely to be helpful: {}",
+            node_content.print_root()
+        );
+    }
     let mapped_node = HydroNode::Map {
         f: f.into(),
         input: Box::new(node_content),
-        metadata: HydroIrMetadata {
-            location_kind: metadata.location_kind.root().clone(), // Remove any ticks
-            backtrace: metadata.backtrace.clone(),
-            output_type: Some(DebugType(Box::new(mapped_output_type.clone()))),
-            cardinality: None,
-            cpu_usage: None,
-            network_recv_cpu_usage: None,
-            id: None,
-            tag: None,
-        },
+        metadata: HydroIrMetadata::new(
+            // Remove any ticks from location root
+            metadata.location_kind.root().clone(),
+            metadata.backtrace.clone(),
+            Some(DebugType(Box::new(mapped_output_type.clone()))),
+        ),
     };
 
     // Set up the network node
@@ -70,16 +72,11 @@ fn add_network(node: &mut HydroNode, new_location: &LocationId) {
         ))
         .map(|e| e.into()),
         input: Box::new(mapped_node),
-        metadata: HydroIrMetadata {
-            location_kind: new_location.clone(),
-            backtrace: metadata.backtrace.clone(),
-            output_type: Some(DebugType(Box::new(mapped_output_type))),
-            cardinality: None,
-            cpu_usage: None,
-            network_recv_cpu_usage: None,
-            id: None,
-            tag: None,
-        },
+        metadata: HydroIrMetadata::new(
+            new_location.clone(),
+            metadata.backtrace.clone(),
+            Some(output_debug_type.clone()),
+        ),
     };
 
     // Map again to remove the member Id (mimicking send_anonymous)
@@ -87,16 +84,11 @@ fn add_network(node: &mut HydroNode, new_location: &LocationId) {
     let mapped_node = HydroNode::Map {
         f: f.into(),
         input: Box::new(network_node),
-        metadata: HydroIrMetadata {
-            location_kind: new_location.clone(),
-            backtrace: metadata.backtrace.clone(),
-            output_type: Some(output_debug_type),
-            cardinality: None,
-            cpu_usage: None,
-            network_recv_cpu_usage: None,
-            id: None,
-            tag: None,
-        },
+        metadata: HydroIrMetadata::new(
+            new_location.clone(),
+            metadata.backtrace.clone(),
+            Some(output_debug_type.clone()),
+        ),
     };
     *node = mapped_node;
 }
@@ -128,7 +120,11 @@ fn add_tee(
 
     let teed_node = HydroNode::Tee {
         inner: TeeNode(new_inner),
-        metadata,
+        metadata: HydroIrMetadata::new(
+            new_location.clone(),
+            metadata.backtrace,
+            metadata.output_type,
+        ),
     };
     *node = teed_node;
 }

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -16,8 +17,11 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::decouple_analysis::decouple_analysis;
 use crate::decoupler::Decoupler;
 use crate::deploy::ReusableHosts;
-use crate::parse_results::{analyze_cluster_results, analyze_send_recv_overheads};
-use crate::repair::{cycle_source_to_sink_input, inject_id, remove_counter};
+use crate::parse_results::{
+    MultiRunMetadata, RunMetadata, analyze_cluster_results, analyze_send_recv_overheads,
+    compare_expected_performance,
+};
+use crate::repair::{cycle_source_to_sink_input, inject_id, inject_orig_id, remove_counter};
 
 fn insert_counter_node(node: &mut HydroNode, next_stmt_id: &mut usize, duration: syn::Expr) {
     match node {
@@ -121,6 +125,7 @@ async fn track_cluster_usage_cardinality(
 }
 
 /// TODO: Return type should be changed to also include Partitioner
+#[expect(clippy::too_many_arguments, reason = "Optimizer internal function")]
 pub async fn deploy_and_analyze<'a>(
     reusable_hosts: &mut ReusableHosts,
     deployment: &mut Deployment,
@@ -129,6 +134,8 @@ pub async fn deploy_and_analyze<'a>(
     processes: &Vec<(usize, String)>,
     exclude_from_decoupling: Vec<String>,
     num_seconds: Option<usize>,
+    multi_run_metadata: &RefCell<MultiRunMetadata>,
+    iteration: usize, // Starts at 0, how many times this function has been called
 ) -> (
     RewriteIrFlowBuilder<'a>,
     Vec<HydroLeaf>,
@@ -186,11 +193,14 @@ pub async fn deploy_and_analyze<'a>(
         .await
         .unwrap();
 
+    // Add metadata for this run
+    let mut run_metadata = RunMetadata::default();
     let (bottleneck, bottleneck_name, bottleneck_num_nodes) = analyze_cluster_results(
         &nodes,
         &mut ir,
         &mut usage_out,
         &mut cardinality_out,
+        &mut run_metadata,
         exclude_from_decoupling,
     )
     .await;
@@ -198,10 +208,21 @@ pub async fn deploy_and_analyze<'a>(
     remove_counter(&mut ir);
     // Inject new next_stmt_id into metadata (old ones are invalid after removing the counter)
     inject_id(&mut ir);
+    if iteration == 0 {
+        // Record the orig_id of nodes during the 1st iteration. Used to compare CPU usages across iterations.
+        inject_orig_id(&mut ir);
+    }
 
     // Create a mapping from each CycleSink to its corresponding CycleSource
     let cycle_source_to_sink_input = cycle_source_to_sink_input(&mut ir);
-    let (send_overhead, recv_overhead) = analyze_send_recv_overheads(&mut ir, &bottleneck);
+    analyze_send_recv_overheads(&mut ir, &mut run_metadata);
+    let send_overhead = *run_metadata.send_overhead.get(&bottleneck).unwrap();
+    let recv_overhead = *run_metadata.recv_overhead.get(&bottleneck).unwrap();
+
+    // Check the expected/actual CPU usages before/after rewrites
+    multi_run_metadata.borrow_mut().push(run_metadata);
+    compare_expected_performance(&mut ir, multi_run_metadata, iteration);
+
     let (orig_to_decoupled, decoupled_to_orig, place_on_decoupled) = decouple_analysis(
         &mut ir,
         &bottleneck,

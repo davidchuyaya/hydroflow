@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 #[tokio::main]
 async fn main() {
     use std::collections::HashMap;
@@ -107,6 +109,7 @@ async fn main() {
         network: network.clone(),
     };
 
+    let multi_run_metadata = RefCell::new(vec![]);
     let num_times_to_optimize = 2;
 
     for i in 0..num_times_to_optimize {
@@ -122,6 +125,8 @@ async fn main() {
                     std::any::type_name::<Aggregator>().to_string(),
                 ],
                 None,
+                &multi_run_metadata,
+                i,
             )
             .await;
 

@@ -5,18 +5,28 @@ use hydro_lang::ir::{HydroLeaf, HydroNode, transform_bottom_up, traverse_dfir};
 use hydro_lang::location::LocationId;
 use syn::Ident;
 
-fn inject_id_leaf(leaf: &mut HydroLeaf, next_stmt_id: &mut usize) {
-    let metadata = leaf.metadata_mut();
-    metadata.id = Some(*next_stmt_id);
-}
-
-fn inject_id_node(node: &mut HydroNode, next_stmt_id: &mut usize) {
-    let metadata = node.metadata_mut();
-    metadata.id = Some(*next_stmt_id);
-}
-
 pub fn inject_id(ir: &mut [HydroLeaf]) {
-    traverse_dfir(ir, inject_id_leaf, inject_id_node);
+    traverse_dfir(
+        ir,
+        |leaf, id| {
+            leaf.metadata_mut().id = Some(*id);
+        },
+        |node, id| {
+            node.metadata_mut().id = Some(*id);
+        },
+    );
+}
+
+pub fn inject_orig_id(ir: &mut [HydroLeaf]) {
+    traverse_dfir(
+        ir,
+        |leaf, id| {
+            leaf.metadata_mut().orig_id = Some(*id);
+        },
+        |node, id| {
+            node.metadata_mut().orig_id = Some(*id);
+        },
+    );
 }
 
 fn link_cycles_leaf(leaf: &mut HydroLeaf, sink_inputs: &mut HashMap<Ident, usize>) {

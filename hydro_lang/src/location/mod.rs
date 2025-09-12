@@ -131,16 +131,7 @@ pub trait Location<'a>: Clone {
 
     #[inline(never)]
     fn new_node_metadata<T>(&self) -> HydroIrMetadata {
-        HydroIrMetadata {
-            location_kind: self.id(),
-            backtrace: get_backtrace(2),
-            output_type: Some(quote_type::<T>().into()),
-            cardinality: None,
-            cpu_usage: None,
-            network_recv_cpu_usage: None,
-            id: None,
-            tag: None,
-        }
+        HydroIrMetadata::new(self.id(), get_backtrace(2), Some(quote_type::<T>().into()))
     }
 
     fn spin(&self) -> Stream<(), Self, Unbounded, TotalOrder, ExactlyOnce>

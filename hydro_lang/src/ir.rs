@@ -965,6 +965,27 @@ pub struct HydroIrMetadata {
     pub network_recv_cpu_usage: Option<f64>,
     pub id: Option<usize>,
     pub tag: Option<String>,
+    pub orig_id: Option<usize>, // ID before applying any rewrites
+}
+
+impl HydroIrMetadata {
+    pub fn new(
+        location_kind: LocationId,
+        backtrace: Backtrace,
+        output_type: Option<DebugType>,
+    ) -> Self {
+        Self {
+            location_kind,
+            backtrace,
+            output_type,
+            cardinality: None,
+            cpu_usage: None,
+            network_recv_cpu_usage: None,
+            id: None,
+            tag: None,
+            orig_id: None,
+        }
+    }
 }
 
 // HydroIrMetadata shouldn't be used to hash or compare

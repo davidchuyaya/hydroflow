@@ -16,9 +16,14 @@ pub fn simple_graphs_bench<'a>(
         clients,
         inc_u32_workload_generator,
         |payloads| {
-            graph(server, payloads.broadcast_bincode(server, nondet!(/** Test */)).into())
-                .demux_bincode(clients)
-                .values()
+            graph(
+                server,
+                payloads
+                    .broadcast_bincode(server, nondet!(/** Test */))
+                    .into(),
+            )
+            .demux_bincode(clients)
+            .values()
         },
         num_clients_per_node,
         nondet!(/** bench */),

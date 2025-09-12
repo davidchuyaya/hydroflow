@@ -13,12 +13,7 @@ pub struct Server {}
 #[expect(clippy::type_complexity, reason = "internal Lock Server code // TODO")]
 pub fn lock_server<'a, Client>(
     server: &Process<'a, Server>,
-    payloads: Stream<
-        (MemberId<Client>, (u32, u32, bool)),
-        Process<'a, Server>,
-        Unbounded,
-        NoOrder,
-    >,
+    payloads: Stream<(MemberId<Client>, (u32, u32, bool)), Process<'a, Server>, Unbounded, NoOrder>,
 ) -> Stream<(MemberId<Client>, (u32, u32, bool)), Process<'a, Server>, Unbounded, NoOrder> {
     let server_tick = server.tick();
     let keyed_payloads = payloads.map(q!(|(client_id, (virt_client_id, server_id, acquire))| (
