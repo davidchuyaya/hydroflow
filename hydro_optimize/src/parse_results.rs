@@ -327,6 +327,8 @@ fn record_metadata(
 fn compare_expected_values(
     opt_new_value: Option<f64>,
     opt_old_value: Option<f64>,
+    new_location: &LocationId,
+    old_location: &LocationId,
     orig_id: usize,
     value_name: &str,
 ) {
@@ -335,36 +337,33 @@ fn compare_expected_values(
             if old_value > 0.0 {
                 let scale_up = new_value / old_value;
                 println!(
-                    "Operator {} {} scaled {}x ({} -> {})",
-                    orig_id, value_name, scale_up, old_value, new_value
+                    "New location {:?}, old location {:?}: Operator {} {} scaled {}x ({} -> {})",
+                    new_location, old_location, orig_id, value_name, scale_up, old_value, new_value
                 );
             } else {
                 println!(
-                    "Operator {} had no previous {}, new {}: {}",
-                    orig_id, value_name, value_name, new_value
+                    "New location {:?}, old location {:?}: Operator {} had no previous {}, new {}: {}",
+                    new_location, old_location, orig_id, value_name, value_name, new_value
                 );
             }
         }
         (Some(new_value), None) => {
             println!(
-                "Operator {} had no previous {}, new {}: {}",
-                orig_id, value_name, value_name, new_value
+                "New location {:?}, old location {:?}: Operator {} had no previous {}, new {}: {}",
+                new_location, old_location, orig_id, value_name, value_name, new_value
             );
         }
         (None, Some(old_value)) => {
             println!(
-                "Operator {} has no new {}, old {}: {}",
-                orig_id, value_name, value_name, old_value
+                "New location {:?}, old location {:?}: Operator {} has no new {}, old {}: {}",
+                new_location, old_location, orig_id, value_name, value_name, old_value
             );
         }
         _ => {}
     }
 }
 
-/// Records CPU usage based on a node's orig_id and compares it to the previous iteration.
-/// Prints the scale-up factor for each operator.
-/// `recorded_usages` is indexed by the iteration, maps from orig_id to the metadata of that run
-/// Note: This won't be able to capture the CPU usage of nodes added by decoupling (mostly networking). Could be added later?
+/// Compares the performance of the current iteration against the previous one.
 pub fn compare_expected_performance(
     ir: &mut [HydroLeaf],
     multi_run_metadata: &RefCell<MultiRunMetadata>,
@@ -402,40 +401,151 @@ pub fn compare_expected_performance(
     // 1. Compare operators with an orig_id
     for (orig_id, metadata) in run_metadata.orig_id_to_metadata.iter() {
         if let Some(old_metadata) = prev_run_metadata.orig_id_to_metadata.get(orig_id) {
-            // Compare CPU usages
             compare_expected_values(
                 metadata.cpu_usage,
                 old_metadata.cpu_usage,
+                metadata.location_kind.root(),
+                old_metadata.location_kind.root(),
                 *orig_id,
                 "CPU usage",
             );
             compare_expected_values(
                 metadata.network_recv_cpu_usage,
                 old_metadata.network_recv_cpu_usage,
+                metadata.location_kind.root(),
+                old_metadata.location_kind.root(),
                 *orig_id,
                 "recv CPU usage",
             );
-            // Compare cardinalities
             compare_expected_values(
                 metadata.cardinality.map(|c| c as f64),
                 old_metadata.cardinality.map(|c| c as f64),
+                metadata.location_kind.root(),
+                old_metadata.location_kind.root(),
                 *orig_id,
                 "cardinality",
             );
         } else {
-            println!("Warning: Operator {} not found in previous run", orig_id);
+            println!(
+                "Warning: Location {:?}: Operator {} not found in previous run",
+                metadata.location_kind.root(),
+                orig_id
+            );
         }
     }
 
     // 2. Compare operators without orig_id (added by decoupling)
-    // let mut orig_id_to_send_usage = HashMap::new(); // orig_id -> CPU usage of output nodes that send to another node
-    // let mut orig_id_to_recv_usage = HashMap::new();
-    // for (id, metadata) in run_metadata.op_id_to_metadata {
-    //     if metadata.orig_id.is_none() {
-    //         let mut inputs = run_metadata.op_id_to_input_op_id.get(&id).unwrap();
+    let mut orig_id_and_loc_to_send_usage = HashMap::new(); // (orig_id, LocationId of sender) -> CPU usage of decoupled output nodes
+    let mut orig_id_and_loc_to_recv_usage = HashMap::new(); // (orig_id, LocationId of receiver) -> CPU usage of decoupled input nodes
+    for (id, metadata) in run_metadata.op_id_to_metadata.iter() {
+        if metadata.orig_id.is_none() {
+            // A. Find the ancestor with an orig_id
+            let mut orig_id_parent = None;
+            let mut curr_id = *id;
+            while orig_id_parent.is_none() {
+                let inputs = run_metadata.op_id_to_input_op_id.get(&curr_id).unwrap();
+                if inputs.len() != 1 {
+                    println!(
+                        "Warning: Location {:?}: Created operator {} has {} inputs, expected 1",
+                        metadata.location_kind.root(),
+                        id,
+                        inputs.len()
+                    );
+                    continue;
+                }
+                let input = inputs[0];
 
-    //     }
-    // }
+                let input_metadata = run_metadata.op_id_to_metadata.get(&input).unwrap();
+                if let Some(input_orig_id) = input_metadata.orig_id {
+                    orig_id_parent = Some(input_orig_id);
+                } else {
+                    curr_id = input;
+                }
+            }
+
+            // B. Add this operator's usages
+            let orig_id_parent_metadata = run_metadata
+                .orig_id_to_metadata
+                .get(&orig_id_parent.unwrap())
+                .unwrap();
+            let parent_location = orig_id_parent_metadata.location_kind.root();
+            let location = metadata.location_kind.root();
+            let is_network = metadata.network_recv_cpu_usage.is_some(); // Note: Technically a network operator may have no CPU usage for receipts. Then its usage is probably negligible anyway.
+
+            if parent_location == location || is_network {
+                // This operator is on the sender
+                let cpu_usage = metadata.cpu_usage.unwrap_or(0.0);
+
+                orig_id_and_loc_to_send_usage
+                    .entry((orig_id_parent.unwrap(), location.clone()))
+                    .and_modify(|usage| {
+                        *usage += cpu_usage;
+                    })
+                    .or_insert_with(|| cpu_usage);
+            }
+            if parent_location != location || is_network {
+                // This operator is on the recipient
+                let cpu_usage = if is_network {
+                    metadata.network_recv_cpu_usage.unwrap_or(0.0)
+                } else {
+                    metadata.cpu_usage.unwrap_or(0.0)
+                };
+
+                orig_id_and_loc_to_recv_usage
+                    .entry((orig_id_parent.unwrap(), location.clone()))
+                    .and_modify(|usage| {
+                        *usage += cpu_usage;
+                    })
+                    .or_insert_with(|| cpu_usage);
+            }
+        }
+    }
+    // C. Compare changes in send CPU usage
+    for ((orig_id, location), cpu_usage) in orig_id_and_loc_to_send_usage {
+        let old_metadata = prev_run_metadata.orig_id_to_metadata.get(&orig_id).unwrap();
+        let old_location = old_metadata.location_kind.root();
+        if let Some(old_cardinality) = old_metadata.cardinality {
+            compare_expected_values(
+                Some(cpu_usage),
+                Some(
+                    prev_run_metadata.send_overhead.get(old_location).unwrap()
+                        * old_cardinality as f64,
+                ),
+                &location,
+                old_location,
+                orig_id,
+                "decoupled send CPU usage",
+            );
+        } else {
+            println!(
+                "Warning: Location {:?}: Created operator {} has no previous cardinality",
+                location, orig_id
+            );
+        }
+    }
+    // D. Compare changes in recv CPU usage
+    for ((orig_id, location), cpu_usage) in orig_id_and_loc_to_recv_usage {
+        let old_metadata = prev_run_metadata.orig_id_to_metadata.get(&orig_id).unwrap();
+        let old_location = old_metadata.location_kind.root();
+        if let Some(old_cardinality) = old_metadata.cardinality {
+            compare_expected_values(
+                Some(cpu_usage),
+                Some(
+                    prev_run_metadata.recv_overhead.get(old_location).unwrap()
+                        * old_cardinality as f64,
+                ),
+                &location,
+                old_location,
+                orig_id,
+                "decoupled recv CPU usage",
+            );
+        } else {
+            println!(
+                "Warning: Location {:?}: Created operator {} has no previous cardinality",
+                location, orig_id
+            );
+        }
+    }
 
     // 3. Compare changes in unexplained CPU usage
     for (location, unexplained) in &run_metadata.unaccounted_perf {
