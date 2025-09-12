@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hydro_lang::builder::deploy::DeployResult;
 use hydro_lang::deploy::HydroDeploy;
@@ -8,6 +8,8 @@ use hydro_lang::ir::{HydroIrMetadata, HydroLeaf, HydroNode, traverse_dfir};
 use hydro_lang::location::LocationId;
 use regex::Regex;
 use tokio::sync::mpsc::UnboundedReceiver;
+
+use crate::debug::print_id;
 
 #[derive(Default)]
 pub struct RunMetadata {
@@ -18,6 +20,7 @@ pub struct RunMetadata {
     op_id_to_metadata: HashMap<usize, HydroIrMetadata>,
     orig_id_to_metadata: HashMap<usize, HydroIrMetadata>,
     op_id_to_input_op_id: HashMap<usize, Vec<usize>>,
+    network_op_id: HashSet<usize>,
 }
 
 pub type MultiRunMetadata = Vec<RunMetadata>;
@@ -332,34 +335,33 @@ fn compare_expected_values(
     orig_id: usize,
     value_name: &str,
 ) {
-    match (opt_new_value, opt_old_value) {
-        (Some(new_value), Some(old_value)) => {
-            if old_value > 0.0 {
-                let scale_up = new_value / old_value;
-                println!(
-                    "New location {:?}, old location {:?}: Operator {} {} scaled {}x ({} -> {})",
-                    new_location, old_location, orig_id, value_name, scale_up, old_value, new_value
-                );
-            } else {
-                println!(
-                    "New location {:?}, old location {:?}: Operator {} had no previous {}, new {}: {}",
-                    new_location, old_location, orig_id, value_name, value_name, new_value
-                );
-            }
-        }
-        (Some(new_value), None) => {
-            println!(
-                "New location {:?}, old location {:?}: Operator {} had no previous {}, new {}: {}",
-                new_location, old_location, orig_id, value_name, value_name, new_value
-            );
-        }
-        (None, Some(old_value)) => {
-            println!(
-                "New location {:?}, old location {:?}: Operator {} has no new {}, old {}: {}",
-                new_location, old_location, orig_id, value_name, value_name, old_value
-            );
-        }
-        _ => {}
+    println!(
+        "New location {:?}, old location {:?}: Operator {} {}, new value {:?}, old value {:?}",
+        new_location, old_location, orig_id, value_name, opt_new_value, opt_old_value
+    );
+}
+
+/// If the op_id is a network node, return the sender's location by checking its parent. Otherwise return the operator's location
+fn sender_location_if_network(run_metadata: &RunMetadata, op_id: usize) -> &LocationId {
+    if run_metadata.network_op_id.contains(&op_id) {
+        let parent = run_metadata.op_id_to_input_op_id.get(&op_id).unwrap();
+        assert!(
+            parent.len() == 1,
+            "Network operator should have exactly one input"
+        );
+        run_metadata
+            .op_id_to_metadata
+            .get(&parent[0])
+            .unwrap()
+            .location_kind
+            .root()
+    } else {
+        run_metadata
+            .op_id_to_metadata
+            .get(&op_id)
+            .unwrap()
+            .location_kind
+            .root()
     }
 }
 
@@ -369,6 +371,8 @@ pub fn compare_expected_performance(
     multi_run_metadata: &RefCell<MultiRunMetadata>,
     iteration: usize,
 ) {
+    print_id(ir);
+
     // Record run_metadata
     traverse_dfir(
         ir,
@@ -380,11 +384,14 @@ pub fn compare_expected_performance(
             );
         },
         |node, _| {
-            record_metadata(
-                node.metadata(),
-                node.input_metadata(),
-                multi_run_metadata.borrow_mut().get_mut(iteration).unwrap(),
-            );
+            let mut borrowed_multi_run_metadata = multi_run_metadata.borrow_mut();
+            let run_metadata = borrowed_multi_run_metadata.get_mut(iteration).unwrap();
+            record_metadata(node.metadata(), node.input_metadata(), run_metadata);
+            if let HydroNode::Network { .. } = node {
+                run_metadata
+                    .network_op_id
+                    .insert(node.metadata().id.unwrap());
+            }
         },
     );
 
@@ -404,19 +411,24 @@ pub fn compare_expected_performance(
             compare_expected_values(
                 metadata.cpu_usage,
                 old_metadata.cpu_usage,
-                metadata.location_kind.root(),
-                old_metadata.location_kind.root(),
+                sender_location_if_network(run_metadata, metadata.id.unwrap()),
+                sender_location_if_network(prev_run_metadata, old_metadata.id.unwrap()),
                 *orig_id,
                 "CPU usage",
             );
-            compare_expected_values(
-                metadata.network_recv_cpu_usage,
-                old_metadata.network_recv_cpu_usage,
-                metadata.location_kind.root(),
-                old_metadata.location_kind.root(),
-                *orig_id,
-                "recv CPU usage",
-            );
+            if metadata.network_recv_cpu_usage.is_some()
+                || old_metadata.network_recv_cpu_usage.is_some()
+            {
+                // Only compare recv CPU usage if either the new or old run had a network recv CPU usage (i.e. was a network operator)
+                compare_expected_values(
+                    metadata.network_recv_cpu_usage,
+                    old_metadata.network_recv_cpu_usage,
+                    metadata.location_kind.root(),
+                    old_metadata.location_kind.root(),
+                    *orig_id,
+                    "recv CPU usage",
+                );
+            }
             compare_expected_values(
                 metadata.cardinality.map(|c| c as f64),
                 old_metadata.cardinality.map(|c| c as f64),
@@ -475,9 +487,8 @@ pub fn compare_expected_performance(
             if parent_location == location || is_network {
                 // This operator is on the sender
                 let cpu_usage = metadata.cpu_usage.unwrap_or(0.0);
-
                 orig_id_and_loc_to_send_usage
-                    .entry((orig_id_parent.unwrap(), location.clone()))
+                    .entry((orig_id_parent.unwrap(), sender_location_if_network(run_metadata, *id)))
                     .and_modify(|usage| {
                         *usage += cpu_usage;
                     })

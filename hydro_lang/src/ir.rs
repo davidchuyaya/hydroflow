@@ -1006,6 +1006,7 @@ impl Debug for HydroIrMetadata {
         f.debug_struct("HydroIrMetadata")
             .field("location_kind", &self.location_kind)
             .field("output_type", &self.output_type)
+            .field("orig_id", &self.orig_id)
             .finish()
     }
 }
