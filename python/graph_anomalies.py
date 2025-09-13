@@ -145,8 +145,12 @@ def create_box_plot(data, title, ylabel, filename, cluster_names=None):
     
     # Map cluster IDs to friendly names for display
     display_locations = []
-    for location in locations:
+    for location in locations[:]:
         if cluster_names and location in cluster_names:
+            display_name = cluster_names[location]
+            if display_name == 'Client':
+                locations.remove(location)
+                continue  # Skip metrics for client
             display_locations.append(cluster_names[location])
         else:
             display_locations.append(location)
