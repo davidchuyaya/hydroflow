@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from collections import defaultdict
 import argparse
+import os
+import glob
 
 
 def parse_cluster_names(filepath):
@@ -186,33 +188,52 @@ def create_box_plot(data, title, ylabel, filename, cluster_names=None):
     for patch, color in zip(bp['boxes'], colors[:len(bp['boxes'])]):
         patch.set_facecolor(color)
     
-    # Calculate quartiles for outlier detection and labeling
+    # Add scatter plot overlay for individual operator values
+    scatter_colors = ['darkblue', 'darkgreen', 'darkred', 'orange', 'purple']
     for i, (location, values) in enumerate(zip(locations, values_by_location)):
-        if len(values) < 4:  # Need at least 4 points for quartiles
-            continue
+        # Add some random jitter to x-coordinates for better visibility
+        x_positions = np.random.normal(i + 1, 0.04, size=len(values))
+        scatter_color = scatter_colors[i % len(scatter_colors)]
+        
+        ax.scatter(x_positions, values, 
+                  alpha=0.6, 
+                  s=30, 
+                  color=scatter_color,
+                  edgecolors='black',
+                  linewidth=0.5,
+                  zorder=3,  # Ensure scatter points appear in front of box plot
+                  label=f'{display_locations[i]} operators' if i < len(display_locations) else f'{location} operators')
+    
+    # Calculate quartiles for outlier detection and labeling
+    # for i, (location, values) in enumerate(zip(locations, values_by_location)):
+    #     if len(values) < 4:  # Need at least 4 points for quartiles
+    #         continue
             
-        q1 = np.percentile(values, 25)
-        q3 = np.percentile(values, 75)
-        iqr = q3 - q1
-        lower_bound = q1 - 1.5 * iqr
-        upper_bound = q3 + 1.5 * iqr
+    #     q1 = np.percentile(values, 25)
+    #     q3 = np.percentile(values, 75)
+    #     iqr = q3 - q1
+    #     lower_bound = q1 - 1.5 * iqr
+    #     upper_bound = q3 + 1.5 * iqr
         
         # Find outliers and label them
         for j, (value, operator_id) in enumerate(zip(values, [point['operator_id'] for point in data[location]])):
-            if value < lower_bound or value > upper_bound:
-                # Add label for outlier
-                ax.annotate(f'Op {operator_id}', 
-                           xy=(i + 1, value), 
-                           xytext=(5, 5), 
-                           textcoords='offset points',
-                           fontsize=8,
-                           bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
-                           arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
+            # if value < lower_bound or value > upper_bound:
+            # Add label for outlier
+            ax.annotate(f'Op {operator_id}', 
+                        xy=(i + 1, value), 
+                        xytext=(5, 5), 
+                        textcoords='offset points',
+                        fontsize=8,
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
+                        arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
     
     ax.set_title(title, fontsize=16, fontweight='bold')
     ax.set_xlabel('New Location', fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.grid(True, alpha=0.3)
+    
+    # Add legend for scatter plot
+    ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
     
     # Rotate x-axis labels if needed
     plt.xticks(rotation=45)
@@ -236,45 +257,62 @@ def create_box_plot(data, title, ylabel, filename, cluster_names=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Create box plots for graph anomalies analysis')
-    parser.add_argument('input_file', nargs='?',
-                       help='Input file containing "New location" lines')
+    parser.add_argument('input_directory', nargs='?', default='.',
+                       help='Directory containing .txt files with "New location" lines (default: current directory)')
     args = parser.parse_args()
     
     try:
-        # Parse cluster names
-        print(f"Parsing cluster names from {args.input_file}...")
-        cluster_names = parse_cluster_names(args.input_file)
-        print(f"Found cluster mappings: {cluster_names}")
+        # Find all .txt files in the directory
+        txt_pattern = os.path.join(args.input_directory, '*.txt')
+        txt_files = glob.glob(txt_pattern)
         
-        # Parse the data
-        print(f"Parsing data from {args.input_file}...")
-        data_by_metric = parse_new_location_lines(args.input_file)
+        if not txt_files:
+            print(f"No .txt files found in directory: {args.input_directory}")
+            return
         
-        print(f"Found metrics: {list(data_by_metric.keys())}")
+        print(f"Found {len(txt_files)} .txt files in {args.input_directory}")
+        for txt_file in txt_files:
+            print(f"  - {os.path.basename(txt_file)}")
         
-        # Create box plot for each metric type
-        for metric_type, location_data in data_by_metric.items():
-            print(f"Creating box plot for {metric_type}...")
-            print(f"  Found data for {len(location_data)} locations")
+        # Process each file individually
+        for txt_file in txt_files:
+            print(f"\nProcessing {os.path.basename(txt_file)}...")
             
-            # Create safe filename from metric type
-            input_file_name_without_ext = args.input_file.rsplit('.', 1)[0]
-            safe_filename = metric_type.lower().replace(' ', '_').replace('/', '_')
+            # Parse cluster names from this file
+            cluster_names = parse_cluster_names(txt_file)
+            print(f"  Found cluster mappings: {cluster_names}")
             
-            create_box_plot(
-                location_data,
-                f'{metric_type.title()} Scale Factors by New Location',
-                f'{metric_type.title()} Scale Factor',
-                f'{input_file_name_without_ext}_{safe_filename}.png',
-                cluster_names
-            )
+            # Parse the data from this file
+            data_by_metric = parse_new_location_lines(txt_file)
+            print(f"  Found metrics: {list(data_by_metric.keys())}")
+            
+            # Get the base filename without extension for output files
+            base_filename = os.path.splitext(txt_file)[0]
+            
+            # Create box plot for each metric type from this file
+            for metric_type, location_data in data_by_metric.items():
+                print(f"  Creating box plot for {metric_type}...")
+                total_operators = sum(len(data_points) for data_points in location_data.values())
+                print(f"    Found {total_operators} operators across {len(location_data)} locations")
+                
+                # Create safe filename from metric type
+                safe_filename = metric_type.lower().replace(' ', '_').replace('/', '_')
+                output_filename = f"{base_filename}_{safe_filename}.png"
+                
+                create_box_plot(
+                    location_data,
+                    f'{metric_type.title()} Scale Factors by New Location - {os.path.basename(txt_file)}',
+                    f'{metric_type.title()} Scale Factor',
+                    output_filename,
+                    cluster_names
+                )
         
         # Show plots
         plt.show()
         
     except FileNotFoundError:
-        print(f"Error: File '{args.input_file}' not found.")
-        print("Please make sure the file exists and try again.")
+        print(f"Error: Directory '{args.input_directory}' not found.")
+        print("Please make sure the directory exists and try again.")
     except Exception as e:
         print(f"Error: {e}")
 
