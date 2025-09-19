@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `hydro_test/src/cluster/compartmentalized_paxos.rs`."><title>compartmentalized_paxos.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="hydro_test" data-themes="" data-resource-suffix="" data-rustdoc-version="1.92.0-nightly (a454fccb0 2025-09-15)" data-channel="nightly" data-search-js="search-cb266a1a.js" data-stringdex-js="stringdex-5af928a3.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">hydro_test/cluster/</div>compartmentalized_paxos.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::collections::HashMap;
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `hydro_test/src/cluster/compartmentalized_paxos.rs`."><title>compartmentalized_paxos.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="hydro_test" data-themes="" data-resource-suffix="" data-rustdoc-version="1.92.0-nightly (7c275d09e 2025-09-18)" data-channel="nightly" data-search-js="search-cb266a1a.js" data-stringdex-js="stringdex-5af928a3.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">hydro_test/cluster/</div>compartmentalized_paxos.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::collections::HashMap;
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>hydro_lang::live_collections::stream::NoOrder;
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>hydro_lang::location::{Atomic, Location, MemberId};
@@ -163,12 +163,12 @@
 <a href=#163 id=163 data-nosnippet>163</a>
 <a href=#164 id=164 data-nosnippet>164</a>    <span class="kw">let </span>just_became_leader = p_is_leader
 <a href=#165 id=165 data-nosnippet>165</a>        .clone()
-<a href=#166 id=166 data-nosnippet>166</a>        .continue_unless(p_is_leader.clone().defer_tick());
+<a href=#166 id=166 data-nosnippet>166</a>        .filter_if_none(p_is_leader.clone().defer_tick());
 <a href=#167 id=167 data-nosnippet>167</a>
 <a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">let </span>c_to_proposers = c_to_proposers(
 <a href=#169 id=169 data-nosnippet>169</a>        just_became_leader
 <a href=#170 id=170 data-nosnippet>170</a>            .clone()
-<a href=#171 id=171 data-nosnippet>171</a>            .then(p_ballot.clone())
+<a href=#171 id=171 data-nosnippet>171</a>            .if_some_then(p_ballot.clone())
 <a href=#172 id=172 data-nosnippet>172</a>            .all_ticks(),
 <a href=#173 id=173 data-nosnippet>173</a>    );
 <a href=#174 id=174 data-nosnippet>174</a>
@@ -204,7 +204,7 @@
 <a href=#204 id=204 data-nosnippet>204</a>
 <a href=#205 id=205 data-nosnippet>205</a>    (
 <a href=#206 id=206 data-nosnippet>206</a>        <span class="comment">// Only tell the clients once when leader election concludes
-<a href=#207 id=207 data-nosnippet>207</a>        </span>just_became_leader.then(p_ballot).all_ticks(),
+<a href=#207 id=207 data-nosnippet>207</a>        </span>just_became_leader.if_some_then(p_ballot).all_ticks(),
 <a href=#208 id=208 data-nosnippet>208</a>        p_to_replicas,
 <a href=#209 id=209 data-nosnippet>209</a>    )
 <a href=#210 id=210 data-nosnippet>210</a>}
@@ -263,7 +263,7 @@
 <a href=#263 id=263 data-nosnippet>263</a>                    </span>nondet_commit_leader_change
 <a href=#264 id=264 data-nosnippet>264</a>                ),
 <a href=#265 id=265 data-nosnippet>265</a>            )
-<a href=#266 id=266 data-nosnippet>266</a>            .continue_if(p_is_leader.clone()),
+<a href=#266 id=266 data-nosnippet>266</a>            .filter_if_some(p_is_leader.clone()),
 <a href=#267 id=267 data-nosnippet>267</a>    );
 <a href=#268 id=268 data-nosnippet>268</a>
 <a href=#269 id=269 data-nosnippet>269</a>    <span class="kw">let </span>num_proxy_leaders = config.num_proxy_leaders;
