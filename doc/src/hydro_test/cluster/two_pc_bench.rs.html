@@ -78,7 +78,7 @@
 <a href=#78 id=78 data-nosnippet>78</a>        <span class="kw">let </span>client_aggregator = builder.process();
 <a href=#79 id=79 data-nosnippet>79</a>
 <a href=#80 id=80 data-nosnippet>80</a>        create_two_pc(<span class="kw-2">&amp;</span>coordinator, <span class="kw-2">&amp;</span>participants, <span class="kw-2">&amp;</span>clients, <span class="kw-2">&amp;</span>client_aggregator);
-<a href=#81 id=81 data-nosnippet>81</a>        <span class="kw">let </span>built = builder.with_default_optimize::&lt;HydroDeploy&gt;();
+<a href=#81 id=81 data-nosnippet>81</a>        <span class="kw">let </span><span class="kw-2">mut </span>built = builder.with_default_optimize::&lt;HydroDeploy&gt;();
 <a href=#82 id=82 data-nosnippet>82</a>
 <a href=#83 id=83 data-nosnippet>83</a>        hydro_lang::compile::ir::dbg_dedup_tee(|| {
 <a href=#84 id=84 data-nosnippet>84</a>            <span class="macro">hydro_build_utils::assert_debug_snapshot!</span>(built.ir());
