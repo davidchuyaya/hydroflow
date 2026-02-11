@@ -126,10 +126,7 @@ impl AwsNetwork {
                     .data
                     .entry("aws_vpc".to_owned())
                     .or_default()
-                    .insert(
-                        vpc_network.clone(),
-                        vpc_filter,
-                    );
+                    .insert(vpc_network.clone(), vpc_filter);
 
                 resource_batch
                     .terraform
