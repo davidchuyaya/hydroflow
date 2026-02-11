@@ -40,6 +40,15 @@ impl LaunchedSshHost for LaunchedEc2Instance {
     }
 }
 
+/// Paths to the VPC, subnet, and default security group Terraform resources.
+/// These may point to managed resources or data sources depending on whether
+/// the network infrastructure was created in this resource batch or already exists.
+struct NetworkResources {
+    vpc_path: String,
+    subnet_path: String,
+    default_sg_path: String,
+}
+
 #[derive(Debug)]
 pub struct AwsNetwork {
     pub region: String,
@@ -56,7 +65,7 @@ impl AwsNetwork {
         })
     }
 
-    fn collect_resources(&self, resource_batch: &mut ResourceBatch) -> String {
+    fn collect_resources(&self, resource_batch: &mut ResourceBatch) -> NetworkResources {
         resource_batch
             .terraform
             .terraform
@@ -79,14 +88,39 @@ impl AwsNetwork {
         let vpc_network = format!("hydro-vpc-network-{}", self.id);
 
         if let Some(existing) = self.existing_vpc.get() {
+            let subnet_key = format!("{vpc_network}-subnet");
+            let sg_key = format!("{vpc_network}-default-sg");
+
             if resource_batch
                 .terraform
                 .resource
                 .get("aws_vpc")
                 .is_some_and(|map| map.contains_key(existing))
             {
-                format!("aws_vpc.{existing}")
+                // VPC was created in this same resource batch; reference managed resources directly.
+                NetworkResources {
+                    vpc_path: format!("aws_vpc.{existing}"),
+                    subnet_path: format!("aws_subnet.{subnet_key}"),
+                    default_sg_path: format!("aws_security_group.{sg_key}"),
+                }
             } else {
+                // VPC lives in another Terraform workspace; use data source lookups.
+                // When the VPC was created by us (name starts with "hydro-vpc-network-"),
+                // look it up by its Name tag. Otherwise it's a user-provided VPC ID.
+                let vpc_filter = if existing.starts_with("hydro-vpc-network-") {
+                    json!({
+                        "filter": [
+                            {
+                                "name": "tag:Name",
+                                "values": [existing]
+                            }
+                        ]
+                    })
+                } else {
+                    json!({
+                        "id": existing,
+                    })
+                };
                 resource_batch
                     .terraform
                     .data
@@ -94,12 +128,50 @@ impl AwsNetwork {
                     .or_default()
                     .insert(
                         vpc_network.clone(),
+                        vpc_filter,
+                    );
+
+                resource_batch
+                    .terraform
+                    .data
+                    .entry("aws_subnet".to_owned())
+                    .or_default()
+                    .insert(
+                        subnet_key.clone(),
                         json!({
-                            "id": existing,
+                            "filter": [
+                                {
+                                    "name": "tag:Name",
+                                    "values": [subnet_key.clone()]
+                                }
+                            ],
+                            "vpc_id": format!("${{data.aws_vpc.{vpc_network}.id}}")
                         }),
                     );
 
-                format!("data.aws_vpc.{vpc_network}")
+                resource_batch
+                    .terraform
+                    .data
+                    .entry("aws_security_group".to_owned())
+                    .or_default()
+                    .insert(
+                        sg_key.clone(),
+                        json!({
+                            "filter": [
+                                {
+                                    "name": "group-name",
+                                    "values": [format!("{vpc_network}-default-allow-internal")]
+                                }
+                            ],
+                            "vpc_id": format!("${{data.aws_vpc.{vpc_network}.id}}")
+                        }),
+                    );
+
+                NetworkResources {
+                    vpc_path: format!("data.aws_vpc.{vpc_network}"),
+                    subnet_path: format!("data.aws_subnet.{subnet_key}"),
+                    default_sg_path: format!("data.aws_security_group.{sg_key}"),
+                }
             }
         } else {
             resource_batch
@@ -265,9 +337,15 @@ impl AwsNetwork {
                     }),
                 );
 
-            let out = format!("aws_vpc.{vpc_network}");
+            let subnet_key = format!("{vpc_network}-subnet");
+            let sg_key = format!("{vpc_network}-default-sg");
+            let resources = NetworkResources {
+                vpc_path: format!("aws_vpc.{vpc_network}"),
+                subnet_path: format!("aws_subnet.{subnet_key}"),
+                default_sg_path: format!("aws_security_group.{sg_key}"),
+            };
             self.existing_vpc.set(vpc_network).unwrap();
-            out
+            resources
         }
     }
 }
@@ -612,7 +690,7 @@ impl Host for AwsEc2Host {
             return;
         }
 
-        let vpc_path = self.network.collect_resources(resource_batch);
+        let network = self.network.collect_resources(resource_batch);
 
         let iam_instance_profile = self
             .iam_instance_profile
@@ -705,12 +783,8 @@ impl Host for AwsEc2Host {
             instance_name.push_str(&display_name);
         }
 
-        let network_id = self.network.id.clone();
-        let vpc_ref = format!("${{{}.id}}", vpc_path);
-        let default_sg_ref = format!(
-            "${{aws_security_group.hydro-vpc-network-{}-default-sg.id}}",
-            network_id
-        );
+        let vpc_ref = format!("${{{}.id}}", network.vpc_path);
+        let default_sg_ref = format!("${{{}.id}}", network.default_sg_path);
 
         // Create additional security group for external ports if needed
         let mut security_groups = vec![default_sg_ref];
@@ -764,7 +838,7 @@ impl Host for AwsEc2Host {
         }
         drop(external_ports);
 
-        let subnet_ref = format!("${{aws_subnet.hydro-vpc-network-{}-subnet.id}}", network_id);
+        let subnet_ref = format!("${{{}.id}}", network.subnet_path);
         let iam_instance_profile_ref = iam_instance_profile.map(|key| format!("${{{key}.name}}"));
 
         // Write the CloudWatch Agent config file.
