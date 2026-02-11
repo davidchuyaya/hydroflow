@@ -142,7 +142,7 @@ impl AwsNetwork {
                             "filter": [
                                 {
                                     "name": "tag:Name",
-                                    "values": [subnet_key.clone()]
+                                    "values": [subnet_key]
                                 }
                             ],
                             "vpc_id": format!("${{data.aws_vpc.{vpc_network}.id}}")
