@@ -53,7 +53,7 @@
 <a href=#53 id=53 data-nosnippet>53</a>            .unique();
 <a href=#54 id=54 data-nosnippet>54</a>        local_state.clone().fold(<span class="macro">q!</span>(|| HashSet::new()), <span class="macro">q!</span>(|set, v| {
 <a href=#55 id=55 data-nosnippet>55</a>            set.insert(v);
-<a href=#56 id=56 data-nosnippet>56</a>        }, commutative = ManualProof(<span class="comment">/* TODO */</span>)))
+<a href=#56 id=56 data-nosnippet>56</a>        }, commutative = <span class="macro">manual_proof!</span>(<span class="doccomment">/** TODO */</span>)))
 <a href=#57 id=57 data-nosnippet>57</a>    };
 <a href=#58 id=58 data-nosnippet>58</a>
 <a href=#59 id=59 data-nosnippet>59</a>    broadcasted_forward.complete(

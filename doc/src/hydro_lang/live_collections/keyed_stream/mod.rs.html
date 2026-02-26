@@ -2653,7 +2653,7 @@
 <a href=#2653 id=2653 data-nosnippet>2653</a>    <span class="attr">#[cfg(any(feature = <span class="string">"deploy"</span>, feature = <span class="string">"sim"</span>))]
 <a href=#2654 id=2654 data-nosnippet>2654</a>    </span><span class="kw">use </span><span class="kw">crate</span>::nondet::nondet;
 <a href=#2655 id=2655 data-nosnippet>2655</a>    <span class="attr">#[cfg(feature = <span class="string">"deploy"</span>)]
-<a href=#2656 id=2656 data-nosnippet>2656</a>    </span><span class="kw">use </span><span class="kw">crate</span>::properties::ManualProof;
+<a href=#2656 id=2656 data-nosnippet>2656</a>    </span><span class="kw">use </span><span class="kw">crate</span>::properties::manual_proof;
 <a href=#2657 id=2657 data-nosnippet>2657</a>
 <a href=#2658 id=2658 data-nosnippet>2658</a>    <span class="attr">#[cfg(feature = <span class="string">"deploy"</span>)]
 <a href=#2659 id=2659 data-nosnippet>2659</a>    #[tokio::test]
@@ -2781,7 +2781,7 @@
 <a href=#2781 id=2781 data-nosnippet>2781</a>                    |acc, v| {
 <a href=#2782 id=2782 data-nosnippet>2782</a>                        <span class="kw-2">*</span>acc += v;
 <a href=#2783 id=2783 data-nosnippet>2783</a>                    },
-<a href=#2784 id=2784 data-nosnippet>2784</a>                    commutative = ManualProof(<span class="comment">/* integer addition is commutative */</span>)
+<a href=#2784 id=2784 data-nosnippet>2784</a>                    commutative = <span class="macro">manual_proof!</span>(<span class="doccomment">/** integer addition is commutative */</span>)
 <a href=#2785 id=2785 data-nosnippet>2785</a>                ),
 <a href=#2786 id=2786 data-nosnippet>2786</a>            )
 <a href=#2787 id=2787 data-nosnippet>2787</a>            .snapshot(<span class="kw-2">&amp;</span>node_tick, <span class="macro">nondet!</span>(<span class="doccomment">/** test */</span>))

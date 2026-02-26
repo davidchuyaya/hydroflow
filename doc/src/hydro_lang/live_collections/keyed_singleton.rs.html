@@ -28,7 +28,7 @@
 <a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span><span class="kw">crate</span>::location::{Atomic, Location, NoTick, Tick, check_matching_location};
 <a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span><span class="kw">crate</span>::manual_expr::ManualExpr;
 <a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span><span class="kw">crate</span>::nondet::{NonDet, nondet};
-<a href=#31 id=31 data-nosnippet>31</a><span class="kw">use </span><span class="kw">crate</span>::properties::ManualProof;
+<a href=#31 id=31 data-nosnippet>31</a><span class="kw">use </span><span class="kw">crate</span>::properties::manual_proof;
 <a href=#32 id=32 data-nosnippet>32</a>
 <a href=#33 id=33 data-nosnippet>33</a><span class="doccomment">/// A marker trait indicating which components of a [`KeyedSingleton`] may change.
 <a href=#34 id=34 data-nosnippet>34</a>///
@@ -1122,7 +1122,7 @@
 <a href=#1122 id=1122 data-nosnippet>1122</a>                        <span class="kw-2">*</span>curr = new;
 <a href=#1123 id=1123 data-nosnippet>1123</a>                    }
 <a href=#1124 id=1124 data-nosnippet>1124</a>                },
-<a href=#1125 id=1125 data-nosnippet>1125</a>                idempotent = ManualProof(<span class="comment">/* repeated elements are ignored */</span>)
+<a href=#1125 id=1125 data-nosnippet>1125</a>                idempotent = <span class="macro">manual_proof!</span>(<span class="doccomment">/** repeated elements are ignored */</span>)
 <a href=#1126 id=1126 data-nosnippet>1126</a>            ))
 <a href=#1127 id=1127 data-nosnippet>1127</a>    }
 <a href=#1128 id=1128 data-nosnippet>1128</a>

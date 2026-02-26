@@ -870,7 +870,7 @@
 <a href=#870 id=870 data-nosnippet>870</a>                local_state = local_state.chain(new_writes).weaken_retries::&lt; AtLeastOnce
 <a href=#871 id=871 data-nosnippet>871</a>                &gt; ().chain(recv_broadcast.flatten_unordered()).unique(); local_state
 <a href=#872 id=872 data-nosnippet>872</a>                .clone().fold(<span class="macro">q!</span>(|| HashSet::new()), <span class="macro">q!</span>(| set, v | { set.insert(v); },
-<a href=#873 id=873 data-nosnippet>873</a>                commutative = ManualProof()))
+<a href=#873 id=873 data-nosnippet>873</a>                commutative = <span class="macro">manual_proof!</span>(<span class="attr">#[doc = <span class="string">" TODO "</span>]</span>)))
 <a href=#874 id=874 data-nosnippet>874</a>            };
 <a href=#875 id=875 data-nosnippet>875</a>            broadcasted_forward
 <a href=#876 id=876 data-nosnippet>876</a>                .complete(

@@ -34,7 +34,7 @@
 <a href=#34 id=34 data-nosnippet>34</a>
 <a href=#35 id=35 data-nosnippet>35</a>    <span class="kw">let </span>reduced = batches.into_keyed().reduce(<span class="macro">q!</span>(
 <a href=#36 id=36 data-nosnippet>36</a>        |total, count| <span class="kw-2">*</span>total += count,
-<a href=#37 id=37 data-nosnippet>37</a>        commutative = ManualProof(<span class="comment">/* integer add is commutative */</span>)
+<a href=#37 id=37 data-nosnippet>37</a>        commutative = <span class="macro">manual_proof!</span>(<span class="doccomment">/** integer add is commutative */</span>)
 <a href=#38 id=38 data-nosnippet>38</a>    ));
 <a href=#39 id=39 data-nosnippet>39</a>
 <a href=#40 id=40 data-nosnippet>40</a>    reduced
