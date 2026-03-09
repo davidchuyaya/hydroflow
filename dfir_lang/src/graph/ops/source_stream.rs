@@ -51,6 +51,8 @@ pub const SOURCE_STREAM: OperatorConstraints = OperatorConstraints {
                _| {
         let receiver = &arguments[0];
         let stream_ident = wc.make_ident("stream");
+        let count_ident = wc.make_ident("count");
+        const LIMIT: usize = 1;
         let write_prologue = quote_spanned! {op_span=>
             // TODO(mingwei): use `::std::pin::pin!(..)`?
             let mut #stream_ident = {
@@ -64,21 +66,37 @@ pub const SOURCE_STREAM: OperatorConstraints = OperatorConstraints {
             };
         };
         let write_iterator = quote_spanned! {op_span=>
+            let mut #count_ident = 0usize;
             let #ident = #root::futures::stream::poll_fn(|_tick_cx| {
+                if #LIMIT <= #count_ident {
+                    return ::std::task::Poll::Ready(::std::option::Option::None);
+                }
                 // Using the `tick_cx` will cause the tick to "block" (yield) until the stream is exhausted, which is not what we want.
                 // We want only the ready items, and will awaken this subgraph on a later tick when more items are available.
                 match #root::futures::stream::Stream::poll_next(
                     ::std::pin::Pin::new(&mut #stream_ident),
                     &mut ::std::task::Context::from_waker(&#context.waker()),
                 ) {
-                    ::std::task::Poll::Ready(maybe) => ::std::task::Poll::Ready(maybe),
+                    ::std::task::Poll::Ready(maybe) => {
+                        if maybe.is_some() {
+                            #count_ident += 1;
+                        }
+                        ::std::task::Poll::Ready(maybe)
+                    },
                     ::std::task::Poll::Pending => ::std::task::Poll::Ready(::std::option::Option::None),
                 }
             });
         };
+        let write_iterator_after = quote_spanned! {op_span=>
+            // If the stream is not fused, we may have more items in the future, so we need to reset the count.
+            if #LIMIT <= #count_ident {
+                #context.schedule_subgraph(#context.current_subgraph(), true);
+            }
+        };
         Ok(OperatorWriteOutput {
             write_prologue,
             write_iterator,
+            write_iterator_after,
             ..Default::default()
         })
     },
