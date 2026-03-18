@@ -330,6 +330,7 @@ pub enum HydroSource {
     Spin(),
     ClusterMembers(LocationId, ClusterMembersState),
     Embedded(syn::Ident),
+    EmbeddedSingleton(syn::Ident),
 }
 
 #[cfg(feature = "build")]
@@ -705,6 +706,10 @@ pub enum HydroRoot {
         input: Box<HydroNode>,
         op_metadata: HydroIrOpMetadata,
     },
+    Null {
+        input: Box<HydroNode>,
+        op_metadata: HydroIrOpMetadata,
+    },
 }
 
 impl HydroRoot {
@@ -952,7 +957,22 @@ impl HydroRoot {
                         LocationId::Process(key) | LocationId::Cluster(key) => *key,
                         _ => panic!("Embedded source must be on a process or cluster"),
                     };
-                    D::register_embedded_input(
+                    D::register_embedded_stream_input(
+                        &mut refcell_env.borrow_mut(),
+                        location_key,
+                        ident,
+                        &element_type,
+                    );
+                } else if let HydroNode::Source { source: HydroSource::EmbeddedSingleton(ident), metadata } = n {
+                    let element_type = match &metadata.collection_kind {
+                        CollectionKind::Singleton { element_type, .. } => element_type.0.as_ref().clone(),
+                        _ => panic!("EmbeddedSingleton source must have Singleton collection kind"),
+                    };
+                    let location_key = match metadata.location_id.root() {
+                        LocationId::Process(key) | LocationId::Cluster(key) => *key,
+                        _ => panic!("EmbeddedSingleton source must be on a process or cluster"),
+                    };
+                    D::register_embedded_singleton_input(
                         &mut refcell_env.borrow_mut(),
                         location_key,
                         ident,
@@ -1042,7 +1062,8 @@ impl HydroRoot {
             | HydroRoot::SendExternal { input, .. }
             | HydroRoot::DestSink { input, .. }
             | HydroRoot::CycleSink { input, .. }
-            | HydroRoot::EmbeddedOutput { input, .. } => {
+            | HydroRoot::EmbeddedOutput { input, .. }
+            | HydroRoot::Null { input, .. } => {
                 transform(input, seen_tees);
             }
         }
@@ -1102,6 +1123,10 @@ impl HydroRoot {
                 op_metadata,
             } => HydroRoot::EmbeddedOutput {
                 ident: ident.clone(),
+                input: Box::new(input.deep_clone(seen_tees)),
+                op_metadata: op_metadata.clone(),
+            },
+            HydroRoot::Null { input, op_metadata } => HydroRoot::Null {
                 input: Box::new(input.deep_clone(seen_tees)),
                 op_metadata: op_metadata.clone(),
             },
@@ -1292,6 +1317,30 @@ impl HydroRoot {
 
                 *next_stmt_id += 1;
             }
+
+            HydroRoot::Null { input, .. } => {
+                let input_ident =
+                    input.emit_core(builders_or_callback, seen_tees, built_tees, next_stmt_id);
+
+                match builders_or_callback {
+                    BuildersOrCallback::Builders(graph_builders) => {
+                        graph_builders
+                            .get_dfir_mut(&input.metadata().location_id)
+                            .add_dfir(
+                                parse_quote! {
+                                    #input_ident -> for_each(|_| {});
+                                },
+                                None,
+                                Some(&next_stmt_id.to_string()),
+                            );
+                    }
+                    BuildersOrCallback::Callback(leaf_callback, _) => {
+                        leaf_callback(self, next_stmt_id);
+                    }
+                }
+
+                *next_stmt_id += 1;
+            }
         }
     }
 
@@ -1301,7 +1350,8 @@ impl HydroRoot {
             | HydroRoot::SendExternal { op_metadata, .. }
             | HydroRoot::DestSink { op_metadata, .. }
             | HydroRoot::CycleSink { op_metadata, .. }
-            | HydroRoot::EmbeddedOutput { op_metadata, .. } => op_metadata,
+            | HydroRoot::EmbeddedOutput { op_metadata, .. }
+            | HydroRoot::Null { op_metadata, .. } => op_metadata,
         }
     }
 
@@ -1311,7 +1361,8 @@ impl HydroRoot {
             | HydroRoot::SendExternal { op_metadata, .. }
             | HydroRoot::DestSink { op_metadata, .. }
             | HydroRoot::CycleSink { op_metadata, .. }
-            | HydroRoot::EmbeddedOutput { op_metadata, .. } => op_metadata,
+            | HydroRoot::EmbeddedOutput { op_metadata, .. }
+            | HydroRoot::Null { op_metadata, .. } => op_metadata,
         }
     }
 
@@ -1321,7 +1372,8 @@ impl HydroRoot {
             | HydroRoot::SendExternal { input, .. }
             | HydroRoot::DestSink { input, .. }
             | HydroRoot::CycleSink { input, .. }
-            | HydroRoot::EmbeddedOutput { input, .. } => input,
+            | HydroRoot::EmbeddedOutput { input, .. }
+            | HydroRoot::Null { input, .. } => input,
         }
     }
 
@@ -1338,6 +1390,7 @@ impl HydroRoot {
             HydroRoot::EmbeddedOutput { ident, .. } => {
                 format!("EmbeddedOutput({})", ident)
             }
+            HydroRoot::Null { .. } => "Null".to_owned(),
         }
     }
 
@@ -1348,7 +1401,8 @@ impl HydroRoot {
             }
             HydroRoot::SendExternal { .. }
             | HydroRoot::CycleSink { .. }
-            | HydroRoot::EmbeddedOutput { .. } => {}
+            | HydroRoot::EmbeddedOutput { .. }
+            | HydroRoot::Null { .. } => {}
         }
     }
 }
@@ -2562,6 +2616,12 @@ impl HydroNode {
                                         #source_ident = source_stream(#ident);
                                     }
                                 }
+
+                                HydroSource::EmbeddedSingleton(ident) => {
+                                    parse_quote! {
+                                        #source_ident = source_iter([#ident]);
+                                    }
+                                }
                             };
 
                             match builders_or_callback {
@@ -3737,7 +3797,8 @@ impl HydroNode {
                 HydroSource::ExternalNetwork()
                 | HydroSource::Spin()
                 | HydroSource::ClusterMembers(_, _)
-                | HydroSource::Embedded(_) => {} // TODO: what goes here?
+                | HydroSource::Embedded(_)
+                | HydroSource::EmbeddedSingleton(_) => {} // TODO: what goes here?
             },
             HydroNode::SingletonSource { value, .. } => {
                 transform(value);
@@ -3970,6 +4031,18 @@ impl HydroNode {
             .iter()
             .map(|input_node| input_node.metadata())
             .collect()
+    }
+
+    /// Returns `true` if this node is a Tee or Partition whose inner Rc
+    /// has other live references, meaning the upstream is already driven
+    /// by another consumer and does not need a Null sink.
+    pub fn is_shared_with_others(&self) -> bool {
+        match self {
+            HydroNode::Tee { inner, .. } | HydroNode::Partition { inner, .. } => {
+                Rc::strong_count(&inner.0) > 1
+            }
+            _ => false,
+        }
     }
 
     pub fn print_root(&self) -> String {

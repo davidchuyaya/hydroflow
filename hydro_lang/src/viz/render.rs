@@ -905,6 +905,15 @@ impl HydroRoot {
                 None,
                 NodeLabel::static_label(format!("embedded_output({})", ident)),
             ),
+
+            HydroRoot::Null { input, .. } => build_sink_node(
+                structure,
+                seen_tees,
+                config,
+                input,
+                None,
+                NodeLabel::static_label("null".to_owned()),
+            ),
         }
     }
 }
@@ -1054,6 +1063,9 @@ impl HydroNode {
                     }
                     HydroSource::Embedded(ident) => {
                         format!("embedded_input({})", ident)
+                    }
+                    HydroSource::EmbeddedSingleton(ident) => {
+                        format!("embedded_singleton_input({})", ident)
                     }
                 };
                 build_source_node(structure, metadata, label)

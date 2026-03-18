@@ -11,7 +11,7 @@ use syn::parse_quote;
 use super::boundedness::{Bounded, Boundedness, IsBounded, Unbounded};
 use super::singleton::Singleton;
 use super::stream::{AtLeastOnce, ExactlyOnce, NoOrder, Stream, TotalOrder};
-use crate::compile::builder::CycleId;
+use crate::compile::builder::{CycleId, FlowState};
 use crate::compile::ir::{CollectionKind, HydroIrOpMetadata, HydroNode, HydroRoot, SharedNode};
 #[cfg(stageleft_runtime)]
 use crate::forward_handle::{CycleCollection, CycleCollectionWithInitial, ReceiverComplete};
@@ -38,8 +38,21 @@ use crate::nondet::{NonDet, nondet};
 pub struct Optional<Type, Loc, Bound: Boundedness> {
     pub(crate) location: Loc,
     pub(crate) ir_node: RefCell<HydroNode>,
+    pub(crate) flow_state: FlowState,
 
     _phantom: PhantomData<(Type, Loc, Bound)>,
+}
+
+impl<T, L, B: Boundedness> Drop for Optional<T, L, B> {
+    fn drop(&mut self) {
+        let ir_node = self.ir_node.replace(HydroNode::Placeholder);
+        if !matches!(ir_node, HydroNode::Placeholder) && !ir_node.is_shared_with_others() {
+            self.flow_state.borrow_mut().try_push_root(HydroRoot::Null {
+                input: Box::new(ir_node),
+                op_metadata: HydroIrOpMetadata::new(),
+            });
+        }
+    }
 }
 
 impl<'a, T, L> From<Optional<T, L, Bounded>> for Optional<T, L, Unbounded>
@@ -98,7 +111,7 @@ where
             },
         );
 
-        from_previous_tick.or(initial.filter_if_some(location.optional_first_tick(q!(()))))
+        from_previous_tick.or(initial.filter_if(location.optional_first_tick(q!(())).is_some()))
     }
 }
 
@@ -117,7 +130,7 @@ where
             .borrow_mut()
             .push_root(HydroRoot::CycleSink {
                 cycle_id,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 op_metadata: HydroIrOpMetadata::new(),
             });
     }
@@ -155,7 +168,7 @@ where
             .borrow_mut()
             .push_root(HydroRoot::CycleSink {
                 cycle_id,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 op_metadata: HydroIrOpMetadata::new(),
             });
     }
@@ -193,7 +206,7 @@ where
             .borrow_mut()
             .push_root(HydroRoot::CycleSink {
                 cycle_id,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 op_metadata: HydroIrOpMetadata::new(),
             });
     }
@@ -207,7 +220,7 @@ where
         Optional::new(
             singleton.location.clone(),
             HydroNode::Cast {
-                inner: Box::new(singleton.ir_node.into_inner()),
+                inner: Box::new(singleton.ir_node.replace(HydroNode::Placeholder)),
                 metadata: singleton
                     .location
                     .new_node_metadata(Self::collection_kind()),
@@ -226,8 +239,8 @@ pub(super) fn zip_inside_tick<'a, T, O, L: Location<'a>, B: Boundedness>(
     Optional::new(
         me.location.clone(),
         HydroNode::CrossSingleton {
-            left: Box::new(me.ir_node.into_inner()),
-            right: Box::new(other.ir_node.into_inner()),
+            left: Box::new(me.ir_node.replace(HydroNode::Placeholder)),
+            right: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
             metadata: me
                 .location
                 .new_node_metadata(Optional::<(T, O), L, B>::collection_kind()),
@@ -245,8 +258,8 @@ fn or_inside_tick<'a, T, L: Location<'a>, B: Boundedness>(
     Optional::new(
         me.location.clone(),
         HydroNode::ChainFirst {
-            first: Box::new(me.ir_node.into_inner()),
-            second: Box::new(other.ir_node.into_inner()),
+            first: Box::new(me.ir_node.replace(HydroNode::Placeholder)),
+            second: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
             metadata: me
                 .location
                 .new_node_metadata(Optional::<T, L, B>::collection_kind()),
@@ -271,6 +284,7 @@ where
         if let HydroNode::Tee { inner, metadata } = self.ir_node.borrow().deref() {
             Optional {
                 location: self.location.clone(),
+                flow_state: self.flow_state.clone(),
                 ir_node: HydroNode::Tee {
                     inner: SharedNode(inner.0.clone()),
                     metadata: metadata.clone(),
@@ -291,8 +305,10 @@ where
     pub(crate) fn new(location: L, ir_node: HydroNode) -> Self {
         debug_assert_eq!(ir_node.metadata().location_id, Location::id(&location));
         debug_assert_eq!(ir_node.metadata().collection_kind, Self::collection_kind());
+        let flow_state = location.flow_state().clone();
         Optional {
             location,
+            flow_state,
             ir_node: RefCell::new(ir_node),
             _phantom: PhantomData,
         }
@@ -339,7 +355,7 @@ where
             self.location.clone(),
             HydroNode::Map {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Optional::<U, L, B>::collection_kind()),
@@ -388,7 +404,7 @@ where
             self.location.clone(),
             HydroNode::FlatMap {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(
                     Stream::<U, L, B, TotalOrder, ExactlyOnce>::collection_kind(),
                 ),
@@ -438,7 +454,7 @@ where
             self.location.clone(),
             HydroNode::FlatMap {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<U, L, B, NoOrder, ExactlyOnce>::collection_kind()),
@@ -550,7 +566,7 @@ where
             self.location.clone(),
             HydroNode::Filter {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Self::collection_kind()),
             },
         )
@@ -589,7 +605,7 @@ where
             self.location.clone(),
             HydroNode::FilterMap {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Optional::<U, L, B>::collection_kind()),
@@ -639,7 +655,10 @@ where
             )
             .latest();
 
-            Optional::new(out.location, out.ir_node.into_inner())
+            Optional::new(
+                out.location.clone(),
+                out.ir_node.replace(HydroNode::Placeholder),
+            )
         } else {
             zip_inside_tick(self, other)
         }
@@ -688,13 +707,16 @@ where
             )
             .latest();
 
-            Optional::new(out.location, out.ir_node.into_inner())
+            Optional::new(
+                out.location.clone(),
+                out.ir_node.replace(HydroNode::Placeholder),
+            )
         } else {
             Optional::new(
                 self.location.clone(),
                 HydroNode::ChainFirst {
-                    first: Box::new(self.ir_node.into_inner()),
-                    second: Box::new(other.ir_node.into_inner()),
+                    first: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                    second: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
                     metadata: self.location.new_node_metadata(Self::collection_kind()),
                 },
             )
@@ -736,7 +758,7 @@ where
         Singleton::new(
             res_option.location.clone(),
             HydroNode::Cast {
-                inner: Box::new(res_option.ir_node.into_inner()),
+                inner: Box::new(res_option.ir_node.replace(HydroNode::Placeholder)),
                 metadata: res_option
                     .location
                     .new_node_metadata(Singleton::<T, L, B>::collection_kind()),
@@ -822,6 +844,99 @@ where
         self.map(q!(|v| Some(v))).unwrap_or(none_singleton)
     }
 
+    /// Returns a [`Singleton`] containing `true` if this optional has a value, `false` otherwise.
+    ///
+    /// # Example
+    /// ```rust
+    /// # #[cfg(feature = "deploy")] {
+    /// # use hydro_lang::prelude::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(hydro_lang::test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// // ticks are lazy by default, forces the second tick to run
+    /// tick.spin_batch(q!(1)).all_ticks().for_each(q!(|_| {}));
+    ///
+    /// let some_first_tick = tick.optional_first_tick(q!(42));
+    /// some_first_tick.is_some().all_ticks()
+    /// # }, |mut stream| async move {
+    /// // [true /* first tick */, false /* second tick */, ...]
+    /// # for w in vec![true, false] {
+    /// #     assert_eq!(stream.next().await.unwrap(), w);
+    /// # }
+    /// # }));
+    /// # }
+    /// ```
+    #[expect(clippy::wrong_self_convention, reason = "Stream naming")]
+    pub fn is_some(self) -> Singleton<bool, L, B> {
+        self.map(q!(|_| ()))
+            .into_singleton()
+            .map(q!(|o| o.is_some()))
+    }
+
+    /// Returns a [`Singleton`] containing `true` if this optional is null, `false` otherwise.
+    ///
+    /// # Example
+    /// ```rust
+    /// # #[cfg(feature = "deploy")] {
+    /// # use hydro_lang::prelude::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(hydro_lang::test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// // ticks are lazy by default, forces the second tick to run
+    /// tick.spin_batch(q!(1)).all_ticks().for_each(q!(|_| {}));
+    ///
+    /// let some_first_tick = tick.optional_first_tick(q!(42));
+    /// some_first_tick.is_none().all_ticks()
+    /// # }, |mut stream| async move {
+    /// // [false /* first tick */, true /* second tick */, ...]
+    /// # for w in vec![false, true] {
+    /// #     assert_eq!(stream.next().await.unwrap(), w);
+    /// # }
+    /// # }));
+    /// # }
+    /// ```
+    #[expect(clippy::wrong_self_convention, reason = "Stream naming")]
+    pub fn is_none(self) -> Singleton<bool, L, B> {
+        self.map(q!(|_| ()))
+            .into_singleton()
+            .map(q!(|o| o.is_none()))
+    }
+
+    /// Returns a [`Singleton`] containing `true` if both optionals are non-null and their
+    /// values are equal, `false` otherwise (including when either is null).
+    ///
+    /// # Example
+    /// ```rust
+    /// # #[cfg(feature = "deploy")] {
+    /// # use hydro_lang::prelude::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(hydro_lang::test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// // ticks are lazy by default, forces the second tick to run
+    /// tick.spin_batch(q!(1)).all_ticks().for_each(q!(|_| {}));
+    ///
+    /// let a = tick.optional_first_tick(q!(5)); // Some(5), None
+    /// let b = tick.optional_first_tick(q!(5)); // Some(5), None
+    /// a.is_some_and_equals(b).all_ticks()
+    /// # }, |mut stream| async move {
+    /// // [true, false]
+    /// # for w in vec![true, false] {
+    /// #     assert_eq!(stream.next().await.unwrap(), w);
+    /// # }
+    /// # }));
+    /// # }
+    /// ```
+    #[expect(clippy::wrong_self_convention, reason = "Stream naming")]
+    pub fn is_some_and_equals(self, other: Optional<T, L, B>) -> Singleton<bool, L, B>
+    where
+        T: PartialEq + Clone,
+        B: IsBounded,
+    {
+        self.into_singleton()
+            .zip(other.into_singleton())
+            .map(q!(|(a, b)| a.is_some() && a == b))
+    }
+
     /// An operator which allows you to "name" a `HydroNode`.
     /// This is only used for testing, to correlate certain `HydroNode`s with IDs.
     pub fn ir_node_named(self, name: &str) -> Optional<T, L, B> {
@@ -839,7 +954,10 @@ where
     where
         B: IsBounded,
     {
-        Optional::new(self.location, self.ir_node.into_inner())
+        Optional::new(
+            self.location.clone(),
+            self.ir_node.replace(HydroNode::Placeholder),
+        )
     }
 
     /// Clones this bounded optional into a tick, returning a optional that has the
@@ -898,7 +1016,7 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::Cast {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Stream::<
                     T,
                     Tick<L>,
@@ -908,6 +1026,47 @@ where
                 >::collection_kind()),
             },
         )
+    }
+
+    /// Filters this optional, passing through the value if the boolean signal is `true`,
+    /// otherwise the output is null.
+    ///
+    /// # Example
+    /// ```rust
+    /// # #[cfg(feature = "deploy")] {
+    /// # use hydro_lang::prelude::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(hydro_lang::test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// // ticks are lazy by default, forces the second tick to run
+    /// tick.spin_batch(q!(1)).all_ticks().for_each(q!(|_| {}));
+    ///
+    /// let some_first_tick = tick.optional_first_tick(q!(()));
+    /// let signal = some_first_tick.is_some(); // true on first tick, false on second
+    /// let batch_first_tick = process
+    ///   .source_iter(q!(vec![456]))
+    ///   .batch(&tick, nondet!(/** test */));
+    /// let batch_second_tick = process
+    ///   .source_iter(q!(vec![789]))
+    ///   .batch(&tick, nondet!(/** test */))
+    ///   .defer_tick();
+    /// batch_first_tick.chain(batch_second_tick).first()
+    ///   .filter_if(signal)
+    ///   .unwrap_or(tick.singleton(q!(0)))
+    ///   .all_ticks()
+    /// # }, |mut stream| async move {
+    /// // [456, 0]
+    /// # for w in vec![456, 0] {
+    /// #     assert_eq!(stream.next().await.unwrap(), w);
+    /// # }
+    /// # }));
+    /// # }
+    /// ```
+    pub fn filter_if(self, signal: Singleton<bool, L, B>) -> Optional<T, L, B>
+    where
+        B: IsBounded,
+    {
+        self.zip(signal.filter(q!(|b| *b))).map(q!(|(d, _)| d))
     }
 
     /// Filters this optional, passing through the optional value if it is non-null **and** the
@@ -946,11 +1105,12 @@ where
     /// # }));
     /// # }
     /// ```
+    #[deprecated(note = "use `filter_if` with `Optional::is_some()` instead")]
     pub fn filter_if_some<U>(self, signal: Optional<U, L, B>) -> Optional<T, L, B>
     where
         B: IsBounded,
     {
-        self.zip(signal.map(q!(|_u| ()))).map(q!(|(d, _signal)| d))
+        self.filter_if(signal.is_some())
     }
 
     /// Filters this optional, passing through the optional value if it is non-null **and** the
@@ -989,16 +1149,12 @@ where
     /// # }));
     /// # }
     /// ```
+    #[deprecated(note = "use `filter_if` with `!Optional::is_some()` instead")]
     pub fn filter_if_none<U>(self, other: Optional<U, L, B>) -> Optional<T, L, B>
     where
         B: IsBounded,
     {
-        self.filter_if_some(
-            other
-                .map(q!(|_| ()))
-                .into_singleton()
-                .filter(q!(|o| o.is_none())),
-        )
+        self.filter_if(other.is_none())
     }
 
     /// If `self` is null, emits a null optional, but if it non-null, emits `value`.
@@ -1029,11 +1185,12 @@ where
     /// # }));
     /// # }
     /// ```
+    #[deprecated(note = "use `filter_if` with `Optional::is_some()` instead")]
     pub fn if_some_then<U>(self, value: Singleton<U, L, B>) -> Optional<U, L, B>
     where
         B: IsBounded,
     {
-        value.filter_if_some(self)
+        value.filter_if(self.is_some())
     }
 }
 
@@ -1055,7 +1212,7 @@ where
         Optional::new(
             self.location.clone().tick,
             HydroNode::Batch {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .tick
@@ -1070,7 +1227,7 @@ where
         Optional::new(
             self.location.tick.l.clone(),
             HydroNode::EndAtomic {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .tick
@@ -1101,7 +1258,7 @@ where
         Optional::new(
             out_location.clone(),
             HydroNode::BeginAtomic {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: out_location
                     .new_node_metadata(Optional::<T, Atomic<L>, B>::collection_kind()),
             },
@@ -1121,7 +1278,7 @@ where
         Optional::new(
             tick.clone(),
             HydroNode::Batch {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: tick
                     .new_node_metadata(Optional::<T, Tick<L>, Bounded>::collection_kind()),
             },
@@ -1164,7 +1321,7 @@ where
         let tick = self.location.tick();
 
         self.snapshot(&tick, nondet)
-            .filter_if_some(samples.batch(&tick, nondet).first())
+            .filter_if(samples.batch(&tick, nondet).first().is_some())
             .all_ticks()
             .weaken_retries()
     }
@@ -1266,7 +1423,7 @@ where
         Optional::new(
             self.location.outer().clone(),
             HydroNode::YieldConcat {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .outer()
@@ -1289,7 +1446,7 @@ where
         Optional::new(
             out_location.clone(),
             HydroNode::YieldConcat {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: out_location
                     .new_node_metadata(Optional::<T, Atomic<L>, Unbounded>::collection_kind()),
             },
@@ -1339,7 +1496,7 @@ where
         Optional::new(
             self.location.clone(),
             HydroNode::DeferTick {
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Self::collection_kind()),
             },
         )

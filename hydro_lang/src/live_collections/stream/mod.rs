@@ -12,10 +12,10 @@ use tokio::time::Instant;
 
 use super::boundedness::{Bounded, Boundedness, IsBounded, Unbounded};
 use super::keyed_singleton::KeyedSingleton;
-use super::keyed_stream::KeyedStream;
+use super::keyed_stream::{Generate, KeyedStream};
 use super::optional::Optional;
 use super::singleton::Singleton;
-use crate::compile::builder::CycleId;
+use crate::compile::builder::{CycleId, FlowState};
 use crate::compile::ir::{
     CollectionKind, HydroIrOpMetadata, HydroNode, HydroRoot, SharedNode, StreamOrder, StreamRetry,
 };
@@ -27,6 +27,7 @@ use crate::live_collections::batch_atomic::BatchAtomic;
 use crate::location::dynamic::{DynLocation, LocationId};
 use crate::location::tick::{Atomic, DeferTick, NoAtomic};
 use crate::location::{Location, NoTick, Tick, check_matching_location};
+use crate::manual_expr::ManualExpr;
 use crate::nondet::{NonDet, nondet};
 use crate::prelude::manual_proof;
 use crate::properties::{AggFuncAlgebra, ValidCommutativityFor, ValidIdempotenceFor};
@@ -197,8 +198,21 @@ pub struct Stream<
 > {
     pub(crate) location: Loc,
     pub(crate) ir_node: RefCell<HydroNode>,
+    pub(crate) flow_state: FlowState,
 
     _phantom: PhantomData<(Type, Loc, Bound, Order, Retry)>,
+}
+
+impl<T, L, B: Boundedness, O: Ordering, R: Retries> Drop for Stream<T, L, B, O, R> {
+    fn drop(&mut self) {
+        let ir_node = self.ir_node.replace(HydroNode::Placeholder);
+        if !matches!(ir_node, HydroNode::Placeholder) && !ir_node.is_shared_with_others() {
+            self.flow_state.borrow_mut().try_push_root(HydroRoot::Null {
+                input: Box::new(ir_node),
+                op_metadata: HydroIrOpMetadata::new(),
+            });
+        }
+    }
 }
 
 impl<'a, T, L, O: Ordering, R: Retries> From<Stream<T, L, Bounded, O, R>>
@@ -212,9 +226,10 @@ where
             .new_node_metadata(Stream::<T, L, Unbounded, O, R>::collection_kind());
 
         Stream {
-            location: stream.location,
+            location: stream.location.clone(),
+            flow_state: stream.flow_state.clone(),
             ir_node: RefCell::new(HydroNode::Cast {
-                inner: Box::new(stream.ir_node.into_inner()),
+                inner: Box::new(stream.ir_node.replace(HydroNode::Placeholder)),
                 metadata: new_meta,
             }),
             _phantom: PhantomData,
@@ -288,7 +303,7 @@ where
             },
         );
 
-        from_previous_tick.chain(initial.filter_if_some(location.optional_first_tick(q!(()))))
+        from_previous_tick.chain(initial.filter_if(location.optional_first_tick(q!(())).is_some()))
     }
 }
 
@@ -308,7 +323,7 @@ where
             .borrow_mut()
             .push_root(HydroRoot::CycleSink {
                 cycle_id,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 op_metadata: HydroIrOpMetadata::new(),
             });
     }
@@ -348,7 +363,7 @@ where
             .borrow_mut()
             .push_root(HydroRoot::CycleSink {
                 cycle_id,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 op_metadata: HydroIrOpMetadata::new(),
             });
     }
@@ -371,6 +386,7 @@ where
         if let HydroNode::Tee { inner, metadata } = self.ir_node.borrow().deref() {
             Stream {
                 location: self.location.clone(),
+                flow_state: self.flow_state.clone(),
                 ir_node: HydroNode::Tee {
                     inner: SharedNode(inner.0.clone()),
                     metadata: metadata.clone(),
@@ -392,8 +408,10 @@ where
         debug_assert_eq!(ir_node.metadata().location_id, Location::id(&location));
         debug_assert_eq!(ir_node.metadata().collection_kind, Self::collection_kind());
 
+        let flow_state = location.flow_state().clone();
         Stream {
             location,
+            flow_state,
             ir_node: RefCell::new(ir_node),
             _phantom: PhantomData,
         }
@@ -441,7 +459,7 @@ where
             self.location.clone(),
             HydroNode::Map {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<U, L, B, O, R>::collection_kind()),
@@ -483,7 +501,7 @@ where
             self.location.clone(),
             HydroNode::FlatMap {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<U, L, B, O, R>::collection_kind()),
@@ -530,7 +548,7 @@ where
             self.location.clone(),
             HydroNode::FlatMap {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<U, L, B, NoOrder, R>::collection_kind()),
@@ -633,7 +651,7 @@ where
             self.location.clone(),
             HydroNode::Filter {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Self::collection_kind()),
             },
         )
@@ -685,7 +703,9 @@ where
         F: Fn(&T) -> bool + 'a,
     {
         let f: crate::compile::ir::DebugExpr = f.splice_fn1_borrow_ctx(&self.location).into();
-        let shared = SharedNode(Rc::new(RefCell::new(self.ir_node.into_inner())));
+        let shared = SharedNode(Rc::new(RefCell::new(
+            self.ir_node.replace(HydroNode::Placeholder),
+        )));
 
         let true_stream = Stream::new(
             self.location.clone(),
@@ -738,7 +758,7 @@ where
             self.location.clone(),
             HydroNode::FilterMap {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<U, L, B, O, R>::collection_kind()),
@@ -783,13 +803,49 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::CrossSingleton {
-                left: Box::new(self.ir_node.into_inner()),
-                right: Box::new(other.ir_node.into_inner()),
+                left: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                right: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<(T, O2), L, B, O, R>::collection_kind()),
             },
         )
+    }
+
+    /// Passes this stream through if the boolean signal is `true`, otherwise the output is empty.
+    ///
+    /// # Example
+    /// ```rust
+    /// # #[cfg(feature = "deploy")] {
+    /// # use hydro_lang::prelude::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(hydro_lang::test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// // ticks are lazy by default, forces the second tick to run
+    /// tick.spin_batch(q!(1)).all_ticks().for_each(q!(|_| {}));
+    ///
+    /// let signal = tick.optional_first_tick(q!(())).is_some(); // true on tick 1, false on tick 2
+    /// let batch_first_tick = process
+    ///   .source_iter(q!(vec![1, 2, 3, 4]))
+    ///   .batch(&tick, nondet!(/** test */));
+    /// let batch_second_tick = process
+    ///   .source_iter(q!(vec![5, 6, 7, 8]))
+    ///   .batch(&tick, nondet!(/** test */))
+    ///   .defer_tick();
+    /// batch_first_tick.chain(batch_second_tick)
+    ///   .filter_if(signal)
+    ///   .all_ticks()
+    /// # }, |mut stream| async move {
+    /// // [1, 2, 3, 4]
+    /// # for w in vec![1, 2, 3, 4] {
+    /// #     assert_eq!(stream.next().await.unwrap(), w);
+    /// # }
+    /// # }));
+    /// # }
+    /// ```
+    pub fn filter_if(self, signal: Singleton<bool, L, Bounded>) -> Stream<T, L, B, O, R> {
+        self.cross_singleton(signal.filter(q!(|b| *b)))
+            .map(q!(|(d, _)| d))
     }
 
     /// Passes this stream through if the argument (a [`Bounded`] [`Optional`]`) is non-null, otherwise the output is empty.
@@ -826,9 +882,9 @@ where
     /// # }));
     /// # }
     /// ```
+    #[deprecated(note = "use `filter_if` with `Optional::is_some()` instead")]
     pub fn filter_if_some<U>(self, signal: Optional<U, L, Bounded>) -> Stream<T, L, B, O, R> {
-        self.cross_singleton(signal.map(q!(|_u| ())))
-            .map(q!(|(d, _signal)| d))
+        self.filter_if(signal.is_some())
     }
 
     /// Passes this stream through if the argument (a [`Bounded`] [`Optional`]`) is null, otherwise the output is empty.
@@ -865,13 +921,9 @@ where
     /// # }));
     /// # }
     /// ```
+    #[deprecated(note = "use `filter_if` with `!Optional::is_some()` instead")]
     pub fn filter_if_none<U>(self, other: Optional<U, L, Bounded>) -> Stream<T, L, B, O, R> {
-        self.filter_if_some(
-            other
-                .map(q!(|_| ()))
-                .into_singleton()
-                .filter(q!(|o| o.is_none())),
-        )
+        self.filter_if(other.is_none())
     }
 
     /// Forms the cross-product (Cartesian product, cross-join) of the items in the 2 input streams, returning all
@@ -907,8 +959,8 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::CrossProduct {
-                left: Box::new(self.ir_node.into_inner()),
-                right: Box::new(other.ir_node.into_inner()),
+                left: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                right: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<(T, T2), L, B, NoOrder, R>::collection_kind()),
@@ -941,7 +993,7 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::Unique {
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<T, L, B, O, ExactlyOnce>::collection_kind()),
@@ -984,8 +1036,8 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::Difference {
-                pos: Box::new(self.ir_node.into_inner()),
-                neg: Box::new(other.ir_node.into_inner()),
+                pos: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                neg: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<T, L, Bounded, O, R>::collection_kind()),
@@ -1023,7 +1075,7 @@ where
             self.location.clone(),
             HydroNode::Inspect {
                 f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Self::collection_kind()),
             },
         )
@@ -1045,7 +1097,7 @@ where
             .flow_state()
             .borrow_mut()
             .push_root(HydroRoot::ForEach {
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 f,
                 op_metadata: HydroIrOpMetadata::new(),
             });
@@ -1067,7 +1119,7 @@ where
             .borrow_mut()
             .push_root(HydroRoot::DestSink {
                 sink: sink.splice_typed_ctx(&self.location).into(),
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 op_metadata: HydroIrOpMetadata::new(),
             });
     }
@@ -1099,7 +1151,7 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::Enumerate {
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Stream::<
                     (usize, T),
                     L,
@@ -1155,13 +1207,13 @@ where
         let core = HydroNode::Fold {
             init,
             acc: comb.into(),
-            input: Box::new(ordered_etc.ir_node.into_inner()),
+            input: Box::new(ordered_etc.ir_node.replace(HydroNode::Placeholder)),
             metadata: ordered_etc
                 .location
                 .new_node_metadata(Singleton::<A, L, B>::collection_kind()),
         };
 
-        Singleton::new(ordered_etc.location, core)
+        Singleton::new(ordered_etc.location.clone(), core)
     }
 
     /// Combines elements of the stream into an [`Optional`], by starting with the first element in the stream,
@@ -1203,13 +1255,13 @@ where
 
         let core = HydroNode::Reduce {
             f: f.into(),
-            input: Box::new(ordered_etc.ir_node.into_inner()),
+            input: Box::new(ordered_etc.ir_node.replace(HydroNode::Placeholder)),
             metadata: ordered_etc
                 .location
                 .new_node_metadata(Optional::<T, L, B>::collection_kind()),
         };
 
-        Optional::new(ordered_etc.location, core)
+        Optional::new(ordered_etc.location.clone(), core)
     }
 
     /// Computes the maximum element in the stream as an [`Optional`], which
@@ -1459,12 +1511,125 @@ where
             HydroNode::Scan {
                 init,
                 acc: f,
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(
                     Stream::<U, L, B, TotalOrder, ExactlyOnce>::collection_kind(),
                 ),
             },
         )
+    }
+
+    /// Iteratively processes the elements of the stream using a state machine that can yield
+    /// elements as it processes its inputs. This is designed to mirror the unstable generator
+    /// syntax in Rust, without requiring special syntax.
+    ///
+    /// Like [`Stream::scan`], this function takes in an initializer that emits the initial
+    /// state. The second argument defines the processing logic, taking in a mutable reference
+    /// to the state and the value to be processed. It emits a [`Generate`] value, whose
+    /// variants define what is emitted and whether further inputs should be processed.
+    ///
+    /// # Example
+    /// ```rust
+    /// # #[cfg(feature = "deploy")] {
+    /// # use hydro_lang::prelude::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(hydro_lang::test_util::stream_transform_test(|process| {
+    /// process.source_iter(q!(vec![1, 3, 100, 10])).generator(
+    ///     q!(|| 0),
+    ///     q!(|acc, x| {
+    ///         *acc += x;
+    ///         if *acc > 100 {
+    ///             hydro_lang::live_collections::keyed_stream::Generate::Return("done!".to_owned())
+    ///         } else if *acc % 2 == 0 {
+    ///             hydro_lang::live_collections::keyed_stream::Generate::Yield("even".to_owned())
+    ///         } else {
+    ///             hydro_lang::live_collections::keyed_stream::Generate::Continue
+    ///         }
+    ///     }),
+    /// )
+    /// # }, |mut stream| async move {
+    /// // Output: "even", "done!"
+    /// # let mut results = Vec::new();
+    /// # for _ in 0..2 {
+    /// #     results.push(stream.next().await.unwrap());
+    /// # }
+    /// # results.sort();
+    /// # assert_eq!(results, vec!["done!".to_owned(), "even".to_owned()]);
+    /// # }));
+    /// # }
+    /// ```
+    pub fn generator<A, U, I, F>(
+        self,
+        init: impl IntoQuotedMut<'a, I, L> + Copy,
+        f: impl IntoQuotedMut<'a, F, L> + Copy,
+    ) -> Stream<U, L, B, TotalOrder, ExactlyOnce>
+    where
+        O: IsOrdered,
+        R: IsExactlyOnce,
+        I: Fn() -> A + 'a,
+        F: Fn(&mut A, T) -> Generate<U> + 'a,
+    {
+        let init: ManualExpr<I, _> = ManualExpr::new(move |ctx: &L| init.splice_fn0_ctx(ctx));
+        let f: ManualExpr<F, _> = ManualExpr::new(move |ctx: &L| f.splice_fn2_borrow_mut_ctx(ctx));
+
+        let this = self.make_totally_ordered().make_exactly_once();
+
+        // State is Option<Option<A>>:
+        //   None = not yet initialized
+        //   Some(Some(a)) = active with state a
+        //   Some(None) = terminated
+        let scan_init = q!(|| None)
+            .splice_fn0_ctx::<Option<Option<A>>>(&this.location)
+            .into();
+        let scan_f = q!(move |state: &mut Option<Option<_>>, v| {
+            if state.is_none() {
+                *state = Some(Some(init()));
+            }
+            match state {
+                Some(Some(state_value)) => match f(state_value, v) {
+                    Generate::Yield(out) => Some(Some(out)),
+                    Generate::Return(out) => {
+                        *state = Some(None);
+                        Some(Some(out))
+                    }
+                    // Unlike KeyedStream, we can terminate the scan directly on
+                    // Break/Return because there is only one state (no other keys
+                    // that still need processing).
+                    Generate::Break => None,
+                    Generate::Continue => Some(None),
+                },
+                // State is Some(None) after Return; terminate the scan.
+                _ => None,
+            }
+        })
+        .splice_fn2_borrow_mut_ctx::<Option<Option<A>>, T, _>(&this.location)
+        .into();
+
+        let scan_node = HydroNode::Scan {
+            init: scan_init,
+            acc: scan_f,
+            input: Box::new(this.ir_node.replace(HydroNode::Placeholder)),
+            metadata: this.location.new_node_metadata(Stream::<
+                Option<U>,
+                L,
+                B,
+                TotalOrder,
+                ExactlyOnce,
+            >::collection_kind()),
+        };
+
+        let flatten_f = q!(|d| d)
+            .splice_fn1_ctx::<Option<U>, _>(&this.location)
+            .into();
+        let flatten_node = HydroNode::FlatMap {
+            f: flatten_f,
+            input: Box::new(scan_node),
+            metadata: this
+                .location
+                .new_node_metadata(Stream::<U, L, B, TotalOrder, ExactlyOnce>::collection_kind()),
+        };
+
+        Stream::new(this.location.clone(), flatten_node)
     }
 
     /// Given a time interval, returns a stream corresponding to samples taken from the
@@ -1487,7 +1652,7 @@ where
 
         let tick = self.location.tick();
         self.batch(&tick, nondet)
-            .filter_if_some(samples.batch(&tick, nondet).first())
+            .filter_if(samples.batch(&tick, nondet).first().is_some())
             .all_ticks()
             .weaken_retries()
     }
@@ -1550,7 +1715,7 @@ where
         Stream::new(
             out_location.clone(),
             HydroNode::BeginAtomic {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: out_location
                     .new_node_metadata(Stream::<T, Atomic<L>, B, O, R>::collection_kind()),
             },
@@ -1569,7 +1734,7 @@ where
         Stream::new(
             tick.clone(),
             HydroNode::Batch {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: tick
                     .new_node_metadata(Stream::<T, Tick<L>, Bounded, O, R>::collection_kind()),
             },
@@ -1597,13 +1762,16 @@ where
     /// for the rest of the program.
     pub fn assume_ordering<O2: Ordering>(self, _nondet: NonDet) -> Stream<T, L, B, O2, R> {
         if O::ORDERING_KIND == O2::ORDERING_KIND {
-            Stream::new(self.location, self.ir_node.into_inner())
+            Stream::new(
+                self.location.clone(),
+                self.ir_node.replace(HydroNode::Placeholder),
+            )
         } else if O2::ORDERING_KIND == StreamOrder::NoOrder {
             // We can always weaken the ordering guarantee
             Stream::new(
                 self.location.clone(),
                 HydroNode::Cast {
-                    inner: Box::new(self.ir_node.into_inner()),
+                    inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                     metadata: self
                         .location
                         .new_node_metadata(Stream::<T, L, B, O2, R>::collection_kind()),
@@ -1613,7 +1781,7 @@ where
             Stream::new(
                 self.location.clone(),
                 HydroNode::ObserveNonDet {
-                    inner: Box::new(self.ir_node.into_inner()),
+                    inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                     trusted: false,
                     metadata: self
                         .location
@@ -1643,13 +1811,16 @@ where
         _nondet: NonDet,
     ) -> Stream<T, L, B, O2, R> {
         if O::ORDERING_KIND == O2::ORDERING_KIND {
-            Stream::new(self.location, self.ir_node.into_inner())
+            Stream::new(
+                self.location.clone(),
+                self.ir_node.replace(HydroNode::Placeholder),
+            )
         } else if O2::ORDERING_KIND == StreamOrder::NoOrder {
             // We can always weaken the ordering guarantee
             Stream::new(
                 self.location.clone(),
                 HydroNode::Cast {
-                    inner: Box::new(self.ir_node.into_inner()),
+                    inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                     metadata: self
                         .location
                         .new_node_metadata(Stream::<T, L, B, O2, R>::collection_kind()),
@@ -1659,7 +1830,7 @@ where
             Stream::new(
                 self.location.clone(),
                 HydroNode::ObserveNonDet {
-                    inner: Box::new(self.ir_node.into_inner()),
+                    inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                     trusted: true,
                     metadata: self
                         .location
@@ -1702,13 +1873,16 @@ where
     /// for the rest of the program.
     pub fn assume_retries<R2: Retries>(self, _nondet: NonDet) -> Stream<T, L, B, O, R2> {
         if R::RETRIES_KIND == R2::RETRIES_KIND {
-            Stream::new(self.location, self.ir_node.into_inner())
+            Stream::new(
+                self.location.clone(),
+                self.ir_node.replace(HydroNode::Placeholder),
+            )
         } else if R2::RETRIES_KIND == StreamRetry::AtLeastOnce {
             // We can always weaken the retries guarantee
             Stream::new(
                 self.location.clone(),
                 HydroNode::Cast {
-                    inner: Box::new(self.ir_node.into_inner()),
+                    inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                     metadata: self
                         .location
                         .new_node_metadata(Stream::<T, L, B, O, R2>::collection_kind()),
@@ -1718,7 +1892,7 @@ where
             Stream::new(
                 self.location.clone(),
                 HydroNode::ObserveNonDet {
-                    inner: Box::new(self.ir_node.into_inner()),
+                    inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                     trusted: false,
                     metadata: self
                         .location
@@ -1732,13 +1906,16 @@ where
     // is not observable
     fn assume_retries_trusted<R2: Retries>(self, _nondet: NonDet) -> Stream<T, L, B, O, R2> {
         if R::RETRIES_KIND == R2::RETRIES_KIND {
-            Stream::new(self.location, self.ir_node.into_inner())
+            Stream::new(
+                self.location.clone(),
+                self.ir_node.replace(HydroNode::Placeholder),
+            )
         } else if R2::RETRIES_KIND == StreamRetry::AtLeastOnce {
             // We can always weaken the retries guarantee
             Stream::new(
                 self.location.clone(),
                 HydroNode::Cast {
-                    inner: Box::new(self.ir_node.into_inner()),
+                    inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                     metadata: self
                         .location
                         .new_node_metadata(Stream::<T, L, B, O, R2>::collection_kind()),
@@ -1748,7 +1925,7 @@ where
             Stream::new(
                 self.location.clone(),
                 HydroNode::ObserveNonDet {
-                    inner: Box::new(self.ir_node.into_inner()),
+                    inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                     trusted: true,
                     metadata: self
                         .location
@@ -1787,7 +1964,10 @@ where
     where
         B: IsBounded,
     {
-        Stream::new(self.location, self.ir_node.into_inner())
+        Stream::new(
+            self.location.clone(),
+            self.ir_node.replace(HydroNode::Placeholder),
+        )
     }
 }
 
@@ -1884,8 +2064,8 @@ impl<'a, T, L: Location<'a> + NoTick, O: Ordering, R: Retries> Stream<T, L, Unbo
         Stream::new(
             self.location.clone(),
             HydroNode::Chain {
-                first: Box::new(self.ir_node.into_inner()),
-                second: Box::new(other.ir_node.into_inner()),
+                first: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                second: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Stream::<
                     T,
                     L,
@@ -1939,8 +2119,8 @@ impl<'a, T, L: Location<'a> + NoTick, R: Retries> Stream<T, L, Unbounded, TotalO
         Stream::new(
             self.location.clone(),
             HydroNode::Chain {
-                first: Box::new(self.ir_node.into_inner()),
-                second: Box::new(other.ir_node.into_inner()),
+                first: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                second: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Stream::<
                     T,
                     L,
@@ -1991,7 +2171,7 @@ where
         Stream::new(
             this.location.clone(),
             HydroNode::Sort {
-                input: Box::new(this.ir_node.into_inner()),
+                input: Box::new(this.ir_node.replace(HydroNode::Placeholder)),
                 metadata: this
                     .location
                     .new_node_metadata(Stream::<T, L, Bounded, TotalOrder, R>::collection_kind()),
@@ -2040,8 +2220,8 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::Chain {
-                first: Box::new(self.ir_node.into_inner()),
-                second: Box::new(other.ir_node.into_inner()),
+                first: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                second: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Stream::<
                     T,
                     L,
@@ -2071,8 +2251,8 @@ where
         Stream::new(
             this.location.clone(),
             HydroNode::CrossProduct {
-                left: Box::new(this.ir_node.into_inner()),
-                right: Box::new(other.ir_node.into_inner()),
+                left: Box::new(this.ir_node.replace(HydroNode::Placeholder)),
+                right: Box::new(other.ir_node.replace(HydroNode::Placeholder)),
                 metadata: this.location.new_node_metadata(Stream::<
                     (T, T2),
                     L,
@@ -2178,8 +2358,8 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::Join {
-                left: Box::new(self.ir_node.into_inner()),
-                right: Box::new(n.ir_node.into_inner()),
+                left: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                right: Box::new(n.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self.location.new_node_metadata(Stream::<
                     (K, (V1, V2)),
                     L,
@@ -2228,8 +2408,8 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::AntiJoin {
-                pos: Box::new(self.ir_node.into_inner()),
-                neg: Box::new(n.ir_node.into_inner()),
+                pos: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                neg: Box::new(n.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<(K, V1), L, B, O, R>::collection_kind()),
@@ -2271,7 +2451,7 @@ impl<'a, K, V, L: Location<'a>, B: Boundedness, O: Ordering, R: Retries>
         KeyedStream::new(
             self.location.clone(),
             HydroNode::Cast {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(KeyedStream::<K, V, L, B, O, R>::collection_kind()),
@@ -2331,7 +2511,7 @@ where
         Stream::new(
             self.location.clone().tick,
             HydroNode::Batch {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .tick
@@ -2346,7 +2526,7 @@ where
         Stream::new(
             self.location.tick.l.clone(),
             HydroNode::EndAtomic {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .tick
@@ -2396,7 +2576,7 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::ResolveFutures {
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<T, L, Unbounded, NoOrder, R>::collection_kind()),
@@ -2438,7 +2618,7 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::ResolveFuturesOrdered {
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<T, L, Unbounded, O, R>::collection_kind()),
@@ -2457,7 +2637,7 @@ where
         Stream::new(
             self.location.outer().clone(),
             HydroNode::YieldConcat {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .outer()
@@ -2480,7 +2660,7 @@ where
         Stream::new(
             out_location.clone(),
             HydroNode::YieldConcat {
-                inner: Box::new(self.ir_node.into_inner()),
+                inner: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: out_location
                     .new_node_metadata(Stream::<T, Atomic<L>, Unbounded, O, R>::collection_kind()),
             },
@@ -2571,7 +2751,7 @@ where
         Stream::new(
             self.location.clone(),
             HydroNode::DeferTick {
-                input: Box::new(self.ir_node.into_inner()),
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
                 metadata: self
                     .location
                     .new_node_metadata(Stream::<T, Tick<L>, Bounded, O, R>::collection_kind()),
@@ -3365,5 +3545,47 @@ mod tests {
         }
         odd_results.sort();
         assert_eq!(odd_results, vec![1, 3, 5]);
+    }
+
+    #[cfg(feature = "deploy")]
+    #[tokio::test]
+    async fn unconsumed_inspect_still_runs() {
+        use crate::deploy::DeployCrateWrapper;
+
+        let mut deployment = Deployment::new();
+
+        let mut flow = FlowBuilder::new();
+        let node = flow.process::<()>();
+
+        // The return value of .inspect() is intentionally dropped.
+        // Before the Null-root fix, this would silently do nothing.
+        node.source_iter(q!(0..5))
+            .inspect(q!(|x| println!("inspect: {}", x)));
+
+        let nodes = flow
+            .with_process(&node, deployment.Localhost())
+            .deploy(&mut deployment);
+
+        deployment.deploy().await.unwrap();
+
+        let mut stdout = nodes.get_process(&node).stdout();
+
+        deployment.start().await.unwrap();
+
+        let mut lines = Vec::new();
+        for _ in 0..5 {
+            lines.push(stdout.recv().await.unwrap());
+        }
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![
+                "inspect: 0",
+                "inspect: 1",
+                "inspect: 2",
+                "inspect: 3",
+                "inspect: 4",
+            ]
+        );
     }
 }
