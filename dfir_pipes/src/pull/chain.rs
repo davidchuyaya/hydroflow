@@ -63,10 +63,9 @@ where
             .convert_into()
     }
 
-    fn size_hint(self: Pin<&Self>) -> (usize, Option<usize>) {
-        let this = self.project_ref();
-        let (a_lower, a_upper) = this.first.size_hint();
-        let (b_lower, b_upper) = this.second.size_hint();
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (a_lower, a_upper) = self.first.size_hint();
+        let (b_lower, b_upper) = self.second.size_hint();
 
         let lower = a_lower.saturating_add(b_lower);
         let upper = a_upper.zip(b_upper).and_then(|(a, b)| a.checked_add(b));
@@ -85,45 +84,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pull::test_utils::{AsyncPull, SyncPull, assert_is_fused, assert_types};
-    use crate::pull::{No, Pending, Repeat, Yes, pending};
+    use crate::pull::test_utils::{TestPull, assert_is_fused, assert_types};
+    use crate::pull::{No, Repeat, Yes, pending};
+
+    /// Fused pull with CanPend=No, CanEnd=Yes.
+    type SyncTestPull = TestPull<i32, (), No, Yes, true>;
+    /// Fused pull with CanPend=Yes, CanEnd=Yes.
+    type AsyncTestPull = TestPull<i32, (), Yes, Yes, true>;
 
     #[test]
     fn chain_sync_with_various_second() {
         // Sync + Sync: CanPend=No, CanEnd=Yes
-        let chain: Chain<SyncPull, SyncPull> = Chain::new(SyncPull::new(1), SyncPull::new(1));
+        let chain = Chain::new(SyncTestPull::new([]), SyncTestPull::new([]));
         assert_types::<No, Yes>(&chain);
         assert_is_fused(&chain);
 
         // Sync + Infinite: CanPend=No, CanEnd=No
-        let chain: Chain<SyncPull, Repeat<i32>> = Chain::new(SyncPull::new(1), Repeat::new(42));
+        let chain = Chain::new(SyncTestPull::new([]), Repeat::new(42));
         assert_types::<No, No>(&chain);
 
         // Sync + Pending: CanPend=Yes (No.or(Yes)), CanEnd=No
-        let chain: Chain<SyncPull, Pending<i32>> = Chain::new(SyncPull::new(1), pending());
+        let chain = Chain::new(SyncTestPull::new([]), pending());
         assert_types::<Yes, No>(&chain);
     }
 
     #[test]
     fn chain_async_with_various_second() {
         // Async + Async: CanPend=Yes, CanEnd=Yes
-        let chain: Chain<AsyncPull, AsyncPull> = Chain::new(AsyncPull::new(1), AsyncPull::new(1));
+        let chain = Chain::new(AsyncTestPull::new([]), AsyncTestPull::new([]));
         assert_types::<Yes, Yes>(&chain);
         assert_is_fused(&chain);
 
         // Async + Infinite: CanPend=Yes, CanEnd=No
-        let chain: Chain<AsyncPull, Repeat<i32>> = Chain::new(AsyncPull::new(1), Repeat::new(42));
+        let chain = Chain::new(AsyncTestPull::new([]), Repeat::new(42));
         assert_types::<Yes, No>(&chain);
     }
 
     #[test]
     fn chain_nested_types() {
         // Chain<Chain<Sync, Async>, Infinite>: CanPend=Yes, CanEnd=No
-        let chain_ab: Chain<SyncPull, AsyncPull> = Chain::new(SyncPull::new(1), AsyncPull::new(1));
+        let chain_ab = Chain::new(SyncTestPull::new([]), AsyncTestPull::new([]));
         assert_types::<Yes, Yes>(&chain_ab);
 
-        let chain_abc: Chain<Chain<SyncPull, AsyncPull>, Repeat<i32>> =
-            Chain::new(chain_ab, Repeat::new(3));
+        let chain_abc = Chain::new(chain_ab, Repeat::new(3));
         assert_types::<Yes, No>(&chain_abc);
     }
 

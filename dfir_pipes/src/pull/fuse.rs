@@ -55,9 +55,8 @@ where
         }
     }
 
-    fn size_hint(self: Pin<&Self>) -> (usize, Option<usize>) {
-        let this = self.project_ref();
-        if let Some(prev) = this.prev.as_pin_ref() {
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if let Some(prev) = self.prev.as_ref() {
             prev.size_hint()
         } else {
             (0, Some(0))
@@ -74,11 +73,11 @@ mod tests {
     use core::pin::pin;
 
     use crate::pull::Pull;
-    use crate::pull::test_utils::{PanicsAfterEndPull, assert_fused_runtime};
+    use crate::pull::test_utils::{TestPull, assert_fused_runtime};
 
     #[test]
     fn fuse_shields_upstream() {
-        let p = pin!(PanicsAfterEndPull::new(2).fuse());
+        let p = pin!(TestPull::items(0..2).fuse());
         assert_fused_runtime(p);
     }
 }

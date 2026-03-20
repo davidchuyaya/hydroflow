@@ -99,11 +99,9 @@ where
         }
     }
 
-    fn size_hint(self: Pin<&Self>) -> (usize, Option<usize>) {
-        let this = self.project_ref();
-
-        let (min1, max1) = this.prev1.size_hint();
-        let (min2, max2) = this.prev2.size_hint();
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (min1, max1) = self.prev1.size_hint();
+        let (min2, max2) = self.prev2.size_hint();
 
         // Lower bound is the max of the two (we continue until both end)
         let lower = min1.max(min2);
@@ -134,12 +132,15 @@ mod tests {
     use itertools::EitherOrBoth;
 
     use super::*;
-    use crate::pull::test_utils::{SyncPull, assert_is_fused};
+    use crate::pull::test_utils::{TestPull, assert_is_fused};
     use crate::pull::{Pull, PullStep};
 
     #[test]
     fn zip_longest_functional_same_length() {
-        let mut zip = pin!(ZipLongest::new(SyncPull::new(2), SyncPull::new(2)));
+        let mut zip = pin!(ZipLongest::new(
+            TestPull::items_fused(0..2),
+            TestPull::items_fused(0..2)
+        ));
         assert_is_fused(&*zip);
         let mut results = Vec::new();
 
@@ -159,7 +160,10 @@ mod tests {
 
     #[test]
     fn zip_longest_functional_first_shorter() {
-        let mut zip = pin!(ZipLongest::new(SyncPull::new(1), SyncPull::new(3)));
+        let mut zip = pin!(ZipLongest::new(
+            TestPull::items_fused(0..1),
+            TestPull::items_fused(0..3)
+        ));
         let mut results = Vec::new();
 
         loop {
@@ -182,7 +186,10 @@ mod tests {
 
     #[test]
     fn zip_longest_functional_second_shorter() {
-        let mut zip = pin!(ZipLongest::new(SyncPull::new(3), SyncPull::new(1)));
+        let mut zip = pin!(ZipLongest::new(
+            TestPull::items_fused(0..3),
+            TestPull::items_fused(0..1)
+        ));
         let mut results = Vec::new();
 
         loop {
@@ -205,11 +212,11 @@ mod tests {
 
     #[test]
     fn zip_longest_fused_shields_upstream() {
-        use crate::pull::test_utils::{PanicsAfterEndPull, assert_fused_runtime};
+        use crate::pull::test_utils::assert_fused_runtime;
 
         let p = pin!(ZipLongest::new(
-            PanicsAfterEndPull::new(1).fuse(),
-            PanicsAfterEndPull::new(2).fuse()
+            TestPull::items(0..1).fuse(),
+            TestPull::items(0..2).fuse()
         ));
         assert_fused_runtime(p);
     }

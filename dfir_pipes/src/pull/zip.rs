@@ -93,11 +93,9 @@ where
         }
     }
 
-    fn size_hint(self: Pin<&Self>) -> (usize, Option<usize>) {
-        let this = self.project_ref();
-
-        let (min1, max1) = this.prev1.size_hint();
-        let (min2, max2) = this.prev2.size_hint();
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (min1, max1) = self.prev1.size_hint();
+        let (min2, max2) = self.prev2.size_hint();
 
         // Lower bound is the min of the two (we end when either ends)
         let lower = min1.min(min2);
@@ -122,12 +120,12 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::pull::test_utils::SyncPull;
+    use crate::pull::test_utils::TestPull;
     use crate::pull::{Pull, PullStep};
 
     #[test]
     fn zip_functional_same_length() {
-        let mut zip = pin!(Zip::new(SyncPull::new(2), SyncPull::new(2)));
+        let mut zip = pin!(Zip::new(TestPull::items(0..2), TestPull::items(0..2)));
         let mut results = Vec::new();
 
         loop {
@@ -143,7 +141,7 @@ mod tests {
 
     #[test]
     fn zip_functional_first_shorter() {
-        let mut zip = pin!(Zip::new(SyncPull::new(1), SyncPull::new(3)));
+        let mut zip = pin!(Zip::new(TestPull::items(0..1), TestPull::items(0..3)));
         let mut results = Vec::new();
 
         loop {
@@ -159,7 +157,7 @@ mod tests {
 
     #[test]
     fn zip_functional_second_shorter() {
-        let mut zip = pin!(Zip::new(SyncPull::new(3), SyncPull::new(1)));
+        let mut zip = pin!(Zip::new(TestPull::items(0..3), TestPull::items(0..1)));
         let mut results = Vec::new();
 
         loop {

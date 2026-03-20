@@ -70,9 +70,8 @@ where
         }
     }
 
-    fn size_hint(self: Pin<&Self>) -> (usize, Option<usize>) {
-        let this = self.project_ref();
-        let current_len = this
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let current_len = self
             .current
             .as_ref()
             .map(|(iter, _)| iter.size_hint().0)
@@ -95,11 +94,11 @@ mod tests {
     use core::pin::pin;
 
     use crate::pull::Pull;
-    use crate::pull::test_utils::{PanicsAfterEndPull, assert_fused_runtime};
+    use crate::pull::test_utils::{TestPull, assert_fused_runtime};
 
     #[test]
     fn flat_map_fused_shields_upstream() {
-        let p = pin!(PanicsAfterEndPull::new(5).fuse().flat_map(|x| 0..x));
+        let p = pin!(TestPull::items(0..5).fuse().flat_map(|x| 0..x));
         assert_fused_runtime(p);
     }
 }
