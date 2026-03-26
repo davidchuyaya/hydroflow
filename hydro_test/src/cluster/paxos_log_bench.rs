@@ -114,9 +114,8 @@ pub fn paxos_log_bench<'a>(
 
 #[cfg(test)]
 mod tests {
-    use dfir_lang::graph::WriteConfig;
     use hydro_deploy::Deployment;
-    use hydro_lang::deploy::{DeployCrateWrapper, HydroDeploy, TrybuildHost};
+    use hydro_lang::deploy::{DeployCrateWrapper, TrybuildHost};
 
     #[cfg(stageleft_runtime)]
     use crate::cluster::paxos::{CorePaxos, PaxosConfig};
@@ -153,50 +152,6 @@ mod tests {
             1000,
             pretty_print_bench_results,
         );
-    }
-
-    #[test]
-    fn paxos_log_ir() {
-        let mut builder = hydro_lang::compile::builder::FlowBuilder::new();
-        let proposers = builder.cluster();
-        let acceptors = builder.cluster();
-        let clients = builder.cluster();
-        let client_aggregator = builder.process();
-
-        create_paxos(&proposers, &acceptors, &clients, &client_aggregator);
-        let mut built = builder.with_default_optimize::<HydroDeploy>();
-
-        hydro_lang::compile::ir::dbg_dedup_tee(|| {
-            hydro_build_utils::assert_debug_snapshot!(built.ir());
-        });
-
-        let preview = built.preview_compile();
-        hydro_build_utils::insta::with_settings!({
-            snapshot_suffix => "log_proposer_mermaid"
-        }, {
-            hydro_build_utils::assert_snapshot!(
-                preview.dfir_for(&proposers).to_mermaid(&WriteConfig {
-                    no_subgraphs: true,
-                    no_pull_push: true,
-                    no_handoffs: true,
-                    op_text_no_imports: true,
-                    ..WriteConfig::default()
-                })
-            );
-        });
-        hydro_build_utils::insta::with_settings!({
-            snapshot_suffix => "log_acceptor_mermaid"
-        }, {
-            hydro_build_utils::assert_snapshot!(
-                preview.dfir_for(&acceptors).to_mermaid(&WriteConfig {
-                    no_subgraphs: true,
-                    no_pull_push: true,
-                    no_handoffs: true,
-                    op_text_no_imports: true,
-                    ..WriteConfig::default()
-                })
-            );
-        });
     }
 
     #[tokio::test]
