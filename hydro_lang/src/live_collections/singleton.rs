@@ -320,22 +320,13 @@ where
     pub fn flat_map_ordered<U, I, F>(
         self,
         f: impl IntoQuotedMut<'a, F, L>,
-    ) -> Stream<U, L, B, TotalOrder, ExactlyOnce>
+    ) -> Stream<U, L, Bounded, TotalOrder, ExactlyOnce>
     where
+        B: IsBounded,
         I: IntoIterator<Item = U>,
         F: Fn(T) -> I + 'a,
     {
-        let f = f.splice_fn1_ctx(&self.location).into();
-        Stream::new(
-            self.location.clone(),
-            HydroNode::FlatMap {
-                f,
-                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
-                metadata: self.location.new_node_metadata(
-                    Stream::<U, L, B, TotalOrder, ExactlyOnce>::collection_kind(),
-                ),
-            },
-        )
+        self.into_stream().flat_map_ordered(f)
     }
 
     /// Like [`Singleton::flat_map_ordered`], but allows the implementation of [`Iterator`]
@@ -369,22 +360,13 @@ where
     pub fn flat_map_unordered<U, I, F>(
         self,
         f: impl IntoQuotedMut<'a, F, L>,
-    ) -> Stream<U, L, B, NoOrder, ExactlyOnce>
+    ) -> Stream<U, L, Bounded, NoOrder, ExactlyOnce>
     where
+        B: IsBounded,
         I: IntoIterator<Item = U>,
         F: Fn(T) -> I + 'a,
     {
-        let f = f.splice_fn1_ctx(&self.location).into();
-        Stream::new(
-            self.location.clone(),
-            HydroNode::FlatMap {
-                f,
-                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
-                metadata: self
-                    .location
-                    .new_node_metadata(Stream::<U, L, B, NoOrder, ExactlyOnce>::collection_kind()),
-            },
-        )
+        self.into_stream().flat_map_unordered(f)
     }
 
     /// Flattens the singleton value into a stream, preserving the order of elements.
@@ -413,8 +395,9 @@ where
     /// # }));
     /// # }
     /// ```
-    pub fn flatten_ordered<U>(self) -> Stream<U, L, B, TotalOrder, ExactlyOnce>
+    pub fn flatten_ordered<U>(self) -> Stream<U, L, Bounded, TotalOrder, ExactlyOnce>
     where
+        B: IsBounded,
         T: IntoIterator<Item = U>,
     {
         self.flat_map_ordered(q!(|x| x))
@@ -448,8 +431,9 @@ where
     /// # }));
     /// # }
     /// ```
-    pub fn flatten_unordered<U>(self) -> Stream<U, L, B, NoOrder, ExactlyOnce>
+    pub fn flatten_unordered<U>(self) -> Stream<U, L, Bounded, NoOrder, ExactlyOnce>
     where
+        B: IsBounded,
         T: IntoIterator<Item = U>,
     {
         self.flat_map_unordered(q!(|x| x))
@@ -1082,6 +1066,47 @@ where
                     TotalOrder,
                     ExactlyOnce,
                 >::collection_kind()),
+            },
+        )
+    }
+
+    /// Resolves the singleton's [`Future`] value by blocking until it completes,
+    /// producing a singleton of the resolved output.
+    ///
+    /// This is useful when the singleton contains an async computation that must
+    /// be awaited before further processing. The future is polled to completion
+    /// before the output value is emitted.
+    ///
+    /// # Example
+    /// ```rust
+    /// # #[cfg(feature = "deploy")] {
+    /// # use hydro_lang::prelude::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(hydro_lang::test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// let singleton = tick.singleton(q!(5));
+    /// singleton
+    ///     .map(q!(|v| async move { v * 2 }))
+    ///     .resolve_future_blocking()
+    ///     .all_ticks()
+    /// # }, |mut stream| async move {
+    /// // 10
+    /// # assert_eq!(stream.next().await.unwrap(), 10);
+    /// # }));
+    /// # }
+    /// ```
+    pub fn resolve_future_blocking(self) -> Singleton<T::Output, L, B>
+    where
+        T: Future,
+        B: IsBounded,
+    {
+        Singleton::new(
+            self.location.clone(),
+            HydroNode::ResolveFuturesBlocking {
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                metadata: self
+                    .location
+                    .new_node_metadata(Singleton::<T::Output, L, B>::collection_kind()),
             },
         )
     }

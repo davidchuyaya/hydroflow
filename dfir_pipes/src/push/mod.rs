@@ -12,7 +12,9 @@ mod fanout;
 mod filter;
 mod filter_map;
 mod flat_map;
+mod flat_map_stream;
 mod flatten;
+mod flatten_stream;
 mod for_each;
 mod inspect;
 mod map;
@@ -21,7 +23,11 @@ mod map;
 mod persist;
 mod resolve_futures;
 mod sink;
+mod sink_compat;
 mod unzip;
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+mod vec_push;
 
 #[cfg(test)]
 pub(crate) mod test_utils;
@@ -37,7 +43,9 @@ pub use fanout::Fanout;
 pub use filter::Filter;
 pub use filter_map::FilterMap;
 pub use flat_map::FlatMap;
+pub use flat_map_stream::FlatMapStream;
 pub use flatten::Flatten;
+pub use flatten_stream::FlattenStream;
 pub use for_each::ForEach;
 use futures_core::FusedStream;
 pub use inspect::Inspect;
@@ -46,8 +54,12 @@ pub use map::Map;
 #[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub use persist::Persist;
 pub use resolve_futures::ResolveFutures;
-pub use sink::SinkPush;
+pub use sink::Sink;
+pub use sink_compat::SinkCompat;
 pub use unzip::Unzip;
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub use vec_push::VecPush;
 
 /// The result of pushing an item into a [`Push`].
 ///
@@ -58,6 +70,7 @@ pub use unzip::Unzip;
 /// The `CanPend` type parameter uses [`Toggle`] to statically encode whether pending
 /// is possible. When `CanPend = No`, the `Pending` variant cannot be constructed,
 /// and the push is guaranteed to always accept items immediately.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum PushStep<CanPend>
 where
     CanPend: Toggle,
@@ -140,6 +153,20 @@ where
 
     /// Flushes any buffered items in this push pipeline.
     fn poll_flush(self: Pin<&mut Self>, ctx: &mut Self::Ctx<'_>) -> PushStep<Self::CanPend>;
+
+    /// Informs this push how many items are about to be sent.
+    ///
+    /// The semantics match [`crate::pull::Pull::size_hint`] / [`Iterator::size_hint`]:
+    /// the first element is a lower bound, the second is an optional upper bound.
+    ///
+    /// Combinators should propagate this downstream, adjusting bounds where
+    /// appropriate (e.g. [`Filter`] sets the lower bound to 0).
+    ///
+    /// Under normal usage expect this to be called once before items are pushed. However
+    /// this may be called multiple times or never at all. It is an error to call this multiple
+    /// times with size hints that conflict--each size hint should match or narrow the estimated
+    /// range (after accounting for already-sent items).
+    fn size_hint(self: Pin<&mut Self>, hint: (usize, Option<usize>));
 }
 
 impl<P, Item, Meta> Push<Item, Meta> for &mut P
@@ -161,6 +188,10 @@ where
 
     fn poll_flush(mut self: Pin<&mut Self>, ctx: &mut Self::Ctx<'_>) -> PushStep<Self::CanPend> {
         Pin::new(&mut **self).poll_flush(ctx)
+    }
+
+    fn size_hint(mut self: Pin<&mut Self>, hint: (usize, Option<usize>)) {
+        Pin::new(&mut **self).size_hint(hint)
     }
 }
 
@@ -223,6 +254,20 @@ where
     FlatMap::new(func, next)
 }
 
+/// Creates a [`FlatMapStream`] push that maps each item to a stream and flattens the results.
+pub const fn flat_map_stream<Func, In, St, Meta, Next>(
+    func: Func,
+    next: Next,
+) -> FlatMapStream<Next, Func, St, Meta>
+where
+    Func: FnMut(In) -> St,
+    St: futures_core::Stream,
+    Meta: Copy,
+    Next: Push<St::Item, Meta>,
+{
+    FlatMapStream::new(func, next)
+}
+
 /// Creates a [`Flatten`] push that flattens items that are iterators.
 pub const fn flatten<IntoIter, Meta, Next>(next: Next) -> Flatten<Next, IntoIter, Meta>
 where
@@ -231,6 +276,16 @@ where
     Next: Push<IntoIter::Item, Meta>,
 {
     Flatten::new(next)
+}
+
+/// Creates a [`FlattenStream`] push that flattens items that are streams.
+pub const fn flatten_stream<St, Meta, Next>(next: Next) -> FlattenStream<Next, St, Meta>
+where
+    St: futures_core::Stream,
+    Meta: Copy,
+    Next: Push<St::Item, Meta>,
+{
+    FlattenStream::new(next)
 }
 
 /// Creates a [`ForEach`] terminal push that consumes each item with a function.
@@ -291,15 +346,32 @@ where
     ResolveFutures::new(queue, subgraph_waker, next)
 }
 
+/// Creates a [`Sink`] push that wraps a [`futures_sink::Sink`].
+pub const fn sink<Si, Item>(si: Si) -> Sink<Si>
+where
+    Si: futures_sink::Sink<Item>,
+{
+    Sink::new(si)
+}
+
+/// Creates a [`SinkCompat`] adapter that wraps a [`Push`] and implements [`futures_sink::Sink`].
+pub const fn sink_compat<Psh, Item>(push: Psh) -> SinkCompat<Psh>
+where
+    Psh: Push<Item, ()>,
+{
+    SinkCompat::new(push)
+}
+
 /// Creates an [`Unzip`] push that splits tuple items into two separate pushes.
 pub const fn unzip<P0, P1>(push0: P0, push1: P1) -> Unzip<P0, P1> {
     Unzip::new(push0, push1)
 }
 
-/// Creates a [`SinkPush`] push that wraps a [`futures_sink::Sink`].
-pub const fn sink<Si, Item>(si: Si) -> SinkPush<Si>
-where
-    Si: futures_sink::Sink<Item>,
-{
-    SinkPush::new(si)
+/// Creates a [`VecPush`] that pushes items into the given `Vec`.
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub const fn vec_push<Item>(
+    buf: &mut alloc::vec::Vec<Item>,
+) -> VecPush<&mut alloc::vec::Vec<Item>> {
+    VecPush::new(buf)
 }

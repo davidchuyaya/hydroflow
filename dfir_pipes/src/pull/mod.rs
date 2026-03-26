@@ -19,7 +19,9 @@ mod enumerate;
 mod filter;
 mod filter_map;
 mod flat_map;
+mod flat_map_stream;
 mod flatten;
+mod flatten_stream;
 mod for_each;
 mod from_fn;
 mod fuse;
@@ -39,6 +41,7 @@ mod send_sink;
 mod skip;
 mod skip_while;
 mod stream;
+mod stream_compat;
 mod stream_ready;
 #[cfg(feature = "std")]
 mod symmetric_hash_join;
@@ -60,7 +63,9 @@ pub use enumerate::Enumerate;
 pub use filter::Filter;
 pub use filter_map::FilterMap;
 pub use flat_map::FlatMap;
+pub use flat_map_stream::FlatMapStream;
 pub use flatten::Flatten;
+pub use flatten_stream::FlattenStream;
 pub use for_each::ForEach;
 pub use from_fn::FromFn;
 pub use fuse::Fuse;
@@ -80,12 +85,12 @@ pub use send_sink::SendSink;
 pub use skip::Skip;
 pub use skip_while::SkipWhile;
 pub use stream::Stream;
+pub use stream_compat::StreamCompat;
 pub use stream_ready::StreamReady;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub use symmetric_hash_join::{
-    NewTickJoinIter, NewTickJoinPull, SymmetricHashJoin, SymmetricHashJoinEither,
-    symmetric_hash_join,
+    NewTickJoinIter, SymmetricHashJoin, SymmetricHashJoinEither, symmetric_hash_join,
 };
 pub use take::Take;
 pub use take_while::TakeWhile;
@@ -102,6 +107,7 @@ pub use zip_longest::ZipLongest;
 /// The `CanPend` and `CanEnd` type parameters use [`Toggle`] to statically encode
 /// which variants are possible. When a variant is impossible (e.g., `CanPend = No`),
 /// its payload type becomes [`No`], making it a compile error to construct.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum PullStep<Item, Meta, CanPend: Toggle, CanEnd: Toggle> {
     /// An item is ready with associated metadata.
     Ready(Item, Meta),
@@ -122,14 +128,19 @@ impl<Item, Meta, CanPend: Toggle, CanEnd: Toggle> PullStep<Item, Meta, CanPend, 
         PullStep::Pending(Toggle::create())
     }
 
-    /// Returns `true` if the step is a [`PullStep::Ended`].
-    pub const fn is_ended(&self) -> bool {
-        matches!(self, PullStep::Ended(_))
+    /// Returns `true` if the step is a [`PullStep::Ready`].
+    pub const fn is_ready(&self) -> bool {
+        matches!(self, PullStep::Ready(_, _))
     }
 
     /// Returns `true` if the step is a [`PullStep::Pending`].
     pub const fn is_pending(&self) -> bool {
         matches!(self, PullStep::Pending(_))
+    }
+
+    /// Returns `true` if the step is a [`PullStep::Ended`].
+    pub const fn is_ended(&self) -> bool {
+        matches!(self, PullStep::Ended(_))
     }
 
     /// Tries to convert the `CanPend` and `CanEnd` type parameters, returning `None` if the conversion is invalid.
@@ -214,12 +225,9 @@ pub trait Pull {
     /// That said, the implementation should provide a correct estimation,
     /// because otherwise it would be a violation of the trait's protocol.
     ///
-    /// The default implementation returns `(0, None)` which is correct for any
-    /// pull.
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, None)
-    }
+    /// A default implementation should return `(0, None)` which is correct for any
+    /// pull. However this is not provided, to prevent oversight.
+    fn size_hint(&self) -> (usize, Option<usize>);
 
     /// Borrows this pull, allowing it to be used by reference.
     fn by_ref(&mut self) -> &mut Self {
@@ -299,6 +307,33 @@ pub trait Pull {
         Self::Item: IntoIterator,
     {
         Flatten::new(self)
+    }
+
+    /// Creates a pull that flattens items that are streams by polling each inner stream.
+    ///
+    /// This is useful when you have a pull of streams, and you want to
+    /// flatten them into a single pull. Requires an async context since
+    /// inner streams are polled.
+    fn flatten_stream(self) -> FlattenStream<Self, Self::Item, Self::Meta>
+    where
+        Self: Sized,
+        Self::Item: futures_core::Stream,
+    {
+        FlattenStream::new(self)
+    }
+
+    /// Creates a pull that maps each item to a stream via a closure and flattens the results.
+    ///
+    /// This is like [`flat_map`](Pull::flat_map), but the closure returns a
+    /// [`Stream`](futures_core::Stream) instead of an [`IntoIterator`]. Requires
+    /// an async context since inner streams are polled.
+    fn flat_map_stream<St, F>(self, f: F) -> FlatMapStream<Self, F, St, Self::Meta>
+    where
+        Self: Sized,
+        F: FnMut(Self::Item) -> St,
+        St: futures_core::Stream,
+    {
+        FlatMapStream::new(self, f)
     }
 
     /// Creates a future which runs the given function on each element of a pull.
@@ -565,6 +600,10 @@ where
     ) -> PullStep<Self::Item, Self::Meta, Self::CanPend, Self::CanEnd> {
         Pin::new(&mut **self).pull(ctx)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (**self).size_hint()
+    }
 }
 
 /// A marker trait for pulls that are "fused".
@@ -577,6 +616,8 @@ where
 /// Implementors should ensure this invariant is upheld. The [`Pull::fuse`]
 /// adapter can be used to make any pull fused.
 pub trait FusedPull: Pull {}
+
+impl<P> FusedPull for &mut P where P: FusedPull + Unpin + ?Sized {}
 
 /// Creates a pull from an iterator.
 ///
@@ -592,6 +633,11 @@ pub fn iter<I: IntoIterator>(iter: I) -> Iter<I::IntoIter> {
 /// pend and end.
 pub const fn stream<S: futures_core::stream::Stream>(stream: S) -> Stream<S> {
     Stream::new(stream)
+}
+
+/// Creates a [`StreamCompat`] adapter that wraps a [`Pull`] and implements [`futures_core::stream::Stream`].
+pub const fn stream_compat<Pul: Pull>(pull: Pul) -> StreamCompat<Pul> {
+    StreamCompat::new(pull)
 }
 
 /// Creates a pull from a `futures::Stream` with a custom waker.
