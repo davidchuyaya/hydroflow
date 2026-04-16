@@ -1394,7 +1394,7 @@
 <a href=#1394 id=1394 data-nosnippet>1394</a>        // TODO(cleanup): When scheduled Dfir is removed, DfirMetrics could use slotmap
 <a href=#1395 id=1395 data-nosnippet>1395</a>        // SecondaryMaps directly, eliminating this conversion.
 <a href=#1396 id=1396 data-nosnippet>1396</a>        </span><span class="kw">fn </span>slotmap_raw_idx(key: <span class="kw">impl </span>Key) -&gt; usize {
-<a href=#1397 id=1397 data-nosnippet>1397</a>            (key.data().as_ffi() &amp; <span class="number">0xffff_ffff</span>) <span class="kw">as </span>usize
+<a href=#1397 id=1397 data-nosnippet>1397</a>            (key.data().as_ffi() &amp; <span class="number">0xFFFF_FFFF</span>) <span class="kw">as </span>usize
 <a href=#1398 id=1398 data-nosnippet>1398</a>        }
 <a href=#1399 id=1399 data-nosnippet>1399</a>
 <a href=#1400 id=1400 data-nosnippet>1400</a>        <span class="kw">let </span>df = Ident::new(GRAPH, Span::call_site());
