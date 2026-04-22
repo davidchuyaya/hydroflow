@@ -4060,4 +4060,90 @@ mod tests {
 
         assert_eq!(threshold_out.next().await.unwrap(), 14);
     }
+
+    #[cfg(feature = "deploy")]
+    #[tokio::test]
+    async fn counter_output_captured() {
+        use std::time::Duration;
+
+        use crate::compile::ir::{HydroNode, traverse_dfir};
+        use crate::deploy::HydroDeploy;
+        use crate::deploy::deploy_graph::DeployCrateWrapper;
+
+        const COUNTER_PREFIX: &str = "_test_counter";
+
+        let mut deployment = Deployment::new();
+        let mut flow = FlowBuilder::new();
+        let node = flow.process::<()>();
+        let external = flow.external::<()>();
+
+        let out_port = node
+            .source_iter(q!(0..100))
+            .map(q!(|x| x + 1))
+            .send_bincode_external(&external);
+
+        let built = flow.optimize_with(|ir| {
+            let duration: syn::Expr =
+                syn::parse_quote!(std::time::Duration::from_millis(200));
+            traverse_dfir(
+                ir,
+                |_, _| {},
+                |node, next_stmt_id| {
+                    if let HydroNode::Map { .. } = node {
+                        let metadata = node.metadata().clone();
+                        let node_content =
+                            std::mem::replace(node, HydroNode::Placeholder);
+                        *node = HydroNode::Counter {
+                            tag: next_stmt_id.to_string(),
+                            duration: duration.clone().into(),
+                            prefix: COUNTER_PREFIX.to_string(),
+                            input: Box::new(node_content),
+                            metadata,
+                        };
+                        *next_stmt_id += 1;
+                    }
+                },
+            );
+        });
+
+        let deployable = built.into_deploy::<HydroDeploy>();
+        let deployable = deployable
+            .with_process_erased(
+                node.id().key(),
+                crate::deploy::TrybuildHost::new(deployment.Localhost()),
+            )
+            .with_external(&external, deployment.Localhost());
+
+        let nodes = deployable.deploy(&mut deployment);
+        deployment.deploy().await.unwrap();
+
+        let all_processes: Vec<_> = nodes.get_all_processes().collect();
+        let (_, _, proc_node) = &all_processes[0];
+        let mut counter_rx = proc_node.stdout_filter(COUNTER_PREFIX);
+
+        let mut external_out = nodes.connect(out_port).await;
+        deployment.start().await.unwrap();
+
+        // Read some output to confirm the flow ran
+        let first = external_out.next().await.unwrap();
+        assert_eq!(first, 1);
+
+        // Give counter time to print
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let mut counter_lines: Vec<String> = vec![];
+        while let Ok(line) = counter_rx.try_recv() {
+            counter_lines.push(line);
+        }
+
+        println!("Counter lines received: {}", counter_lines.len());
+        for line in &counter_lines {
+            println!("  {}", line);
+        }
+
+        assert!(
+            !counter_lines.is_empty(),
+            "Expected counter output via stdout_filter but got none"
+        );
+    }
 }
