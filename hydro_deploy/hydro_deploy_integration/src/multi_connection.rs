@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::ops::DerefMut;
 use std::pin::Pin;
@@ -10,7 +10,7 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::codec::{Decoder, Encoder, Framed, FramedRead, FramedWrite};
@@ -24,7 +24,7 @@ pub struct ConnectedMultiConnection<I, O, C: Decoder<Item = I> + Encoder<O>> {
 }
 
 impl<
-    I: 'static,
+    I: Send + 'static,
     O: Send + Sync + 'static,
     C: Decoder<Item = I> + Encoder<O> + Send + Sync + Default + 'static,
 > Connected for ConnectedMultiConnection<I, O, C>
@@ -37,34 +37,41 @@ impl<
 
                 let source = match *bound_server {
                     #[cfg(unix)]
-                    BoundServer::UnixSocket(listener, dir) => MultiConnectionSource {
-                        unix_listener: Some(listener),
-                        tcp_listener: None,
-                        _dir_holder: Some(dir),
-                        next_connection_id: 0,
-                        active_connections: Vec::new(),
-                        poll_cursor: 0,
-                        new_sink_sender,
-                        membership_sender,
-                    },
-                    BoundServer::TcpPort(listener, _) => MultiConnectionSource {
-                        #[cfg(unix)]
-                        unix_listener: None,
-                        tcp_listener: Some(listener.into_inner()),
-                        #[cfg(unix)]
-                        _dir_holder: None,
-                        next_connection_id: 0,
-                        active_connections: Vec::new(),
-                        poll_cursor: 0,
-                        new_sink_sender,
-                        membership_sender,
-                    },
+                    BoundServer::UnixSocket(listener, dir) => {
+                        let (item_sender, item_receiver) = mpsc::unbounded_channel();
+                        MultiConnectionSource {
+                            unix_listener: Some(listener),
+                            tcp_listener: None,
+                            _dir_holder: Some(dir),
+                            next_connection_id: 0,
+                            item_sender,
+                            item_receiver,
+                            new_sink_sender,
+                            membership_sender,
+                        }
+                    }
+                    BoundServer::TcpPort(listener, _) => {
+                        let (item_sender, item_receiver) = mpsc::unbounded_channel();
+                        MultiConnectionSource {
+                            #[cfg(unix)]
+                            unix_listener: None,
+                            tcp_listener: Some(listener.into_inner()),
+                            #[cfg(unix)]
+                            _dir_holder: None,
+                            next_connection_id: 0,
+                            item_sender,
+                            item_receiver,
+                            new_sink_sender,
+                            membership_sender,
+                        }
+                    }
                     _ => panic!("MultiConnection only supports UnixSocket and TcpPort"),
                 };
 
                 let sink = MultiConnectionSink::<O, C> {
                     connection_sinks: HashMap::new(),
                     new_sink_receiver,
+                    dirty_ids: HashSet::new(),
                 };
 
                 ConnectedMultiConnection {
@@ -89,10 +96,9 @@ pub struct MultiConnectionSource<I, O, C: Decoder<Item = I> + Encoder<O>> {
     #[cfg(unix)]
     _dir_holder: Option<TempDir>, // keeps the folder containing the socket alive
     next_connection_id: u64,
-    /// Ordered list for fair polling, will never be `None` at the beginning of a poll
-    active_connections: Vec<Option<(u64, DynDecodedStream<I, C>)>>,
-    /// Cursor for fair round-robin polling
-    poll_cursor: usize,
+    /// Shared channel that all per-connection tasks feed into.
+    item_sender: mpsc::UnboundedSender<(u64, I)>,
+    item_receiver: mpsc::UnboundedReceiver<(u64, I)>,
     new_sink_sender: mpsc::UnboundedSender<(u64, DynEncodedSink<O, C>)>,
     membership_sender: mpsc::UnboundedSender<(u64, bool)>,
 }
@@ -100,58 +106,76 @@ pub struct MultiConnectionSource<I, O, C: Decoder<Item = I> + Encoder<O>> {
 pub struct MultiConnectionSink<O, C: Encoder<O>> {
     connection_sinks: HashMap<u64, DynEncodedSink<O, C>>,
     new_sink_receiver: mpsc::UnboundedReceiver<(u64, DynEncodedSink<O, C>)>,
+    /// Connection IDs that have been written to since the last flush.
+    dirty_ids: HashSet<u64>,
 }
 
 impl<
-    I,
+    I: Send + 'static,
     O: Send + Sync + 'static,
     C: Decoder<Item = I> + Encoder<O> + Send + Sync + Default + 'static,
 > Stream for MultiConnectionSource<I, O, C>
+where
+    <C as Decoder>::Error: Send,
 {
     type Item = Result<(u64, I), <C as Decoder>::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let me = self.deref_mut();
+
+        // Helper: spawn a per-connection reader task
+        let spawn_reader = |connection_id: u64,
+                            mut stream: DynDecodedStream<I, C>,
+                            item_sender: mpsc::UnboundedSender<(u64, I)>,
+                            membership_sender: mpsc::UnboundedSender<(u64, bool)>| {
+            tokio::spawn(async move {
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(data) => {
+                            if item_sender.send((connection_id, data)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = membership_sender.send((connection_id, false));
+            });
+        };
+
         // Handle Unix socket accepts
         #[cfg(unix)]
         if let Some(listener) = me.unix_listener.as_mut() {
             loop {
                 match listener.poll_accept(cx) {
                     Poll::Ready(Ok((stream, _))) => {
-                        use futures::{SinkExt, StreamExt};
-                        use tokio_util::codec::Framed;
-
                         let connection_id = me.next_connection_id;
                         me.next_connection_id += 1;
 
                         let framed = Framed::new(stream, C::default());
                         let (sink, stream) = framed.split();
 
-                        let boxed_stream: Pin<
-                            Box<dyn Stream<Item = Result<I, <C as Decoder>::Error>> + Send + Sync>,
-                        > = Box::pin(stream);
+                        let boxed_stream: DynDecodedStream<I, C> = Box::pin(stream);
+                        let boxed_sink: DynEncodedSink<O, C> = Box::pin(sink.buffer(1024));
 
-                        // Buffer so that a stalled output does not prevent sending to others
-                        let boxed_sink: Pin<
-                            Box<dyn Sink<O, Error = <C as Encoder<O>>::Error> + Send + Sync>,
-                        > = Box::pin(sink.buffer(1024));
-
-                        me.active_connections
-                            .push(Some((connection_id, boxed_stream)));
+                        spawn_reader(
+                            connection_id,
+                            boxed_stream,
+                            me.item_sender.clone(),
+                            me.membership_sender.clone(),
+                        );
 
                         let _ = me.new_sink_sender.send((connection_id, boxed_sink));
                         let _ = me.membership_sender.send((connection_id, true));
                     }
                     Poll::Ready(Err(e)) => {
-                        if !me.active_connections.iter().any(|conn| conn.is_some()) {
+                        // If no tasks are running, propagate the error
+                        if me.item_sender.is_closed() {
                             return Poll::Ready(Some(Err(e.into())));
-                        } else {
-                            break;
                         }
-                    }
-                    Poll::Pending => {
                         break;
                     }
+                    Poll::Pending => break,
                 }
             }
         }
@@ -167,104 +191,47 @@ impl<
                         let framed = Framed::new(stream, C::default());
                         let (sink, stream) = framed.split();
 
-                        let boxed_stream: Pin<
-                            Box<dyn Stream<Item = Result<I, <C as Decoder>::Error>> + Send + Sync>,
-                        > = Box::pin(stream);
+                        let boxed_stream: DynDecodedStream<I, C> = Box::pin(stream);
+                        let boxed_sink: DynEncodedSink<O, C> = Box::pin(sink.buffer(1024));
 
-                        // Buffer so that a stalled output does not prevent sending to others
-                        let boxed_sink: Pin<
-                            Box<dyn Sink<O, Error = <C as Encoder<O>>::Error> + Send + Sync>,
-                        > = Box::pin(sink.buffer(1024));
-
-                        me.active_connections
-                            .push(Some((connection_id, boxed_stream)));
+                        spawn_reader(
+                            connection_id,
+                            boxed_stream,
+                            me.item_sender.clone(),
+                            me.membership_sender.clone(),
+                        );
 
                         let _ = me.new_sink_sender.send((connection_id, boxed_sink));
                         let _ = me.membership_sender.send((connection_id, true));
                     }
                     Poll::Ready(Err(e)) => {
-                        if !me.active_connections.iter().any(|conn| conn.is_some()) {
+                        if me.item_sender.is_closed() {
                             return Poll::Ready(Some(Err(e.into())));
-                        } else {
-                            break;
                         }
-                    }
-                    Poll::Pending => {
                         break;
                     }
+                    Poll::Pending => break,
                 }
             }
         }
 
-        // Poll all active connections for data using fair round-robin cursor
-        let mut out = Poll::Pending;
-        let mut any_removed = false;
-
-        if !me.active_connections.is_empty() {
-            let start_cursor = me.poll_cursor;
-
-            loop {
-                let current_length = me.active_connections.len();
-                let id_and_stream = &mut me.active_connections[me.poll_cursor];
-                let (connection_id, stream) = id_and_stream.as_mut().unwrap();
-                let connection_id = *connection_id; // Copy the ID before borrowing stream
-
-                // Move cursor to next source for next poll
-                me.poll_cursor = (me.poll_cursor + 1) % current_length;
-
-                match stream.as_mut().poll_next(cx) {
-                    Poll::Ready(Some(Ok(data))) => {
-                        out = Poll::Ready(Some(Ok((connection_id, data))));
-                        break;
-                    }
-                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
-                        let _ = me.membership_sender.send((connection_id, false));
-                        *id_and_stream = None; // Mark connection as removed
-                        any_removed = true;
-                    }
-                    Poll::Pending => {}
-                }
-
-                // Check if we've completed a full round
-                if me.poll_cursor == start_cursor {
-                    break;
-                }
-            }
-        }
-
-        // Clean up None entries and adjust cursor
-        let mut current_index = 0;
-        let original_cursor = me.poll_cursor;
-
-        if any_removed {
-            me.active_connections.retain(|conn| {
-                if conn.is_none() && current_index < original_cursor {
-                    me.poll_cursor -= 1;
-                }
-                current_index += 1;
-                conn.is_some()
-            });
-        }
-
-        if me.poll_cursor == me.active_connections.len() {
-            me.poll_cursor = 0;
-        }
-
-        out
+        // Poll the shared channel for items from any connection
+        me.item_receiver.poll_recv(cx).map(|opt| opt.map(Ok))
     }
 }
 
 impl<O, C: Encoder<O>> Sink<(u64, O)> for MultiConnectionSink<O, C> {
     type Error = <C as Encoder<O>>::Error;
 
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let me = self.get_mut();
         loop {
-            match self.new_sink_receiver.poll_recv(cx) {
+            match me.new_sink_receiver.poll_recv(cx) {
                 Poll::Ready(Some((connection_id, sink))) => {
-                    self.connection_sinks.insert(connection_id, sink);
+                    me.connection_sinks.insert(connection_id, sink);
                 }
                 Poll::Ready(None) => {
-                    if self.connection_sinks.is_empty() {
+                    if me.connection_sinks.is_empty() {
                         return Poll::Ready(Err(io::Error::new(
                             io::ErrorKind::BrokenPipe,
                             "No additional sinks are available (was the stream dropped)?",
@@ -280,17 +247,22 @@ impl<O, C: Encoder<O>> Sink<(u64, O)> for MultiConnectionSink<O, C> {
             }
         }
 
-        // Check if all sinks are ready, removing any that are closed
+        // Only check readiness of dirty sinks
         let mut any_pending = false;
-        self.connection_sinks
-            .retain(|_, sink| match sink.as_mut().poll_ready(cx) {
-                Poll::Ready(Ok(())) => true,
-                Poll::Ready(Err(_)) => false,
-                Poll::Pending => {
-                    any_pending = true;
-                    true
+        me.dirty_ids.retain(|id| {
+            if let Some(sink) = me.connection_sinks.get_mut(id) {
+                match sink.as_mut().poll_ready(cx) {
+                    Poll::Ready(Ok(())) => true,
+                    Poll::Ready(Err(_)) => false,
+                    Poll::Pending => {
+                        any_pending = true;
+                        true
+                    }
                 }
-            });
+            } else {
+                false
+            }
+        });
 
         if any_pending {
             Poll::Pending
@@ -299,26 +271,33 @@ impl<O, C: Encoder<O>> Sink<(u64, O)> for MultiConnectionSink<O, C> {
         }
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: (u64, O)) -> Result<(), Self::Error> {
-        if let Some(sink) = self.connection_sinks.get_mut(&item.0) {
-            let _ = sink.as_mut().start_send(item.1); // TODO(shadaj): log errors when we have principled logging
+    fn start_send(self: Pin<&mut Self>, item: (u64, O)) -> Result<(), Self::Error> {
+        let me = self.get_mut();
+        if let Some(sink) = me.connection_sinks.get_mut(&item.0) {
+            me.dirty_ids.insert(item.0);
+            let _ = sink.as_mut().start_send(item.1);
         }
-        // If connection doesn't exist, silently drop (connection may have closed)
         Ok(())
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let me = self.get_mut();
         let mut any_pending = false;
 
-        self.connection_sinks
-            .retain(|_, sink| match sink.as_mut().poll_flush(cx) {
-                Poll::Ready(Ok(())) => true,
-                Poll::Ready(Err(_)) => false,
-                Poll::Pending => {
-                    any_pending = true;
-                    true
+        me.dirty_ids.retain(|id| {
+            if let Some(sink) = me.connection_sinks.get_mut(id) {
+                match sink.as_mut().poll_flush(cx) {
+                    Poll::Ready(Ok(())) => false,
+                    Poll::Ready(Err(_)) => false,
+                    Poll::Pending => {
+                        any_pending = true;
+                        true
+                    }
                 }
-            });
+            } else {
+                false
+            }
+        });
 
         if any_pending {
             Poll::Pending
@@ -327,12 +306,12 @@ impl<O, C: Encoder<O>> Sink<(u64, O)> for MultiConnectionSink<O, C> {
         }
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let mut any_pending = false;
 
-        self.connection_sinks.retain(|_, sink| {
+        self.get_mut().connection_sinks.retain(|_, sink| {
             match sink.as_mut().poll_close(cx) {
-                Poll::Ready(Ok(()) | Err(_)) => false, // Remove regardless of ok/err
+                Poll::Ready(Ok(()) | Err(_)) => false,
                 Poll::Pending => {
                     any_pending = true;
                     true
@@ -354,26 +333,26 @@ pub struct TcpMultiConnectionSource<C: Decoder> {
     pub listener: TcpListener,
     /// Counter for assigning unique connection IDs
     pub next_connection_id: u64,
-    /// Active connections with their IDs and framed readers
-    pub active_connections: Vec<Option<(u64, FramedRead<OwnedReadHalf, C>)>>,
-    /// Cursor for fair round-robin polling
-    pub poll_cursor: usize,
+    /// Shared channel that all per-connection tasks feed into.
+    pub item_sender: mpsc::UnboundedSender<(u64, C::Item)>,
+    pub item_receiver: mpsc::UnboundedReceiver<(u64, C::Item)>,
     /// Channel to send new sinks to the TcpMultiConnectionSink
     pub new_sink_sender: mpsc::UnboundedSender<(u64, FramedWrite<OwnedWriteHalf, C>)>,
     /// Channel to send membership events
     pub membership_sender: mpsc::UnboundedSender<(u64, bool)>,
 }
 
-impl<C: Decoder + Default + Unpin> Stream for TcpMultiConnectionSource<C>
+impl<C: Decoder + Default + Send + Unpin + 'static> Stream for TcpMultiConnectionSource<C>
 where
-    C::Error: From<io::Error>,
+    C::Item: Send,
+    C::Error: From<io::Error> + Send,
 {
     type Item = Result<(u64, C::Item), C::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let me = self.deref_mut();
 
-        // Accept new connections
+        // Accept new connections and spawn a reader task for each
         loop {
             match me.listener.poll_accept(cx) {
                 Poll::Ready(Ok((stream, _peer))) => {
@@ -384,78 +363,38 @@ where
                     let fr = FramedRead::new(rx, C::default());
                     let fw = FramedWrite::new(tx, C::default());
 
-                    me.active_connections.push(Some((connection_id, fr)));
+                    let item_sender = me.item_sender.clone();
+                    let membership_sender = me.membership_sender.clone();
+                    tokio::spawn(async move {
+                        let mut fr = fr;
+                        while let Some(result) = fr.next().await {
+                            match result {
+                                Ok(data) => {
+                                    if item_sender.send((connection_id, data)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        let _ = membership_sender.send((connection_id, false));
+                    });
+
                     let _ = me.new_sink_sender.send((connection_id, fw));
                     let _ = me.membership_sender.send((connection_id, true));
                 }
                 Poll::Ready(Err(e)) => {
-                    if !me.active_connections.iter().any(|c| c.is_some()) {
+                    if me.item_sender.is_closed() {
                         return Poll::Ready(Some(Err(e.into())));
-                    } else {
-                        break;
                     }
-                }
-                Poll::Pending => {
                     break;
                 }
+                Poll::Pending => break,
             }
         }
 
-        // Poll all active connections for data using fair round-robin cursor
-        let mut out = Poll::Pending;
-        let mut any_removed = false;
-
-        if !me.active_connections.is_empty() {
-            let start_cursor = me.poll_cursor;
-
-            loop {
-                let current_length = me.active_connections.len();
-                let id_and_stream = &mut me.active_connections[me.poll_cursor];
-                let (connection_id, stream) = id_and_stream.as_mut().unwrap();
-                let connection_id = *connection_id; // Copy the ID before borrowing stream
-
-                // Move cursor to next source for next poll
-                me.poll_cursor = (me.poll_cursor + 1) % current_length;
-
-                match Pin::new(stream).poll_next(cx) {
-                    Poll::Ready(Some(Ok(data))) => {
-                        out = Poll::Ready(Some(Ok((connection_id, data))));
-                        break;
-                    }
-                    Poll::Ready(Some(Err(_))) | Poll::Ready(None) => {
-                        let _ = me.membership_sender.send((connection_id, false));
-                        *id_and_stream = None; // Mark connection as removed
-                        any_removed = true;
-                    }
-                    Poll::Pending => {}
-                }
-
-                // Check if we've completed a full round
-                if me.poll_cursor == start_cursor {
-                    break;
-                }
-            }
-        }
-
-        // Clean up None entries and adjust cursor
-        let mut current_index = 0;
-        let original_cursor = me.poll_cursor;
-
-        if any_removed {
-            me.active_connections.retain(|conn| {
-                if conn.is_none() && current_index < original_cursor {
-                    me.poll_cursor -= 1;
-                }
-                current_index += 1;
-                conn.is_some()
-            });
-        }
-
-        if me.poll_cursor == me.active_connections.len() {
-            me.poll_cursor = 0;
-        }
-
-        out
+        // Poll the shared channel for items from any connection
+        me.item_receiver.poll_recv(cx).map(|opt| opt.map(Ok))
     }
 }
 
@@ -466,6 +405,8 @@ pub struct TcpMultiConnectionSink<I, C: Encoder<I>> {
     pub connection_sinks: HashMap<u64, FramedWrite<OwnedWriteHalf, C>>,
     /// Channel to receive new sinks from TcpMultiConnectionSource
     pub new_sink_receiver: mpsc::UnboundedReceiver<(u64, FramedWrite<OwnedWriteHalf, C>)>,
+    /// Connection IDs that have been written to since the last flush.
+    dirty_ids: HashSet<u64>,
     _marker: std::marker::PhantomData<fn(I) -> I>, /* fn(I) -> I instead of just I to keep the struct invariant over I, which keeps it Unpin. */
 }
 
@@ -484,6 +425,7 @@ impl<I, C: Encoder<I> + Unpin> Sink<(u64, I)> for TcpMultiConnectionSink<I, C> {
     fn start_send(self: Pin<&mut Self>, item: (u64, I)) -> Result<(), Self::Error> {
         let me = self.get_mut();
         if let Some(sink) = me.connection_sinks.get_mut(&item.0) {
+            me.dirty_ids.insert(item.0);
             let _ = Pin::new(sink).start_send(item.1);
         }
         Ok(())
@@ -493,15 +435,20 @@ impl<I, C: Encoder<I> + Unpin> Sink<(u64, I)> for TcpMultiConnectionSink<I, C> {
         let me = self.get_mut();
         let mut any_pending = false;
 
-        me.connection_sinks
-            .retain(|_id, sink| match Pin::new(sink).poll_flush(cx) {
-                Poll::Ready(Ok(())) => true,
-                Poll::Ready(Err(_)) => false,
-                Poll::Pending => {
-                    any_pending = true;
-                    true
+        me.dirty_ids.retain(|id| {
+            if let Some(sink) = me.connection_sinks.get_mut(id) {
+                match Pin::new(sink).poll_flush(cx) {
+                    Poll::Ready(Ok(())) => false,
+                    Poll::Ready(Err(_)) => false,
+                    Poll::Pending => {
+                        any_pending = true;
+                        true
+                    }
                 }
-            });
+            } else {
+                false
+            }
+        });
 
         if any_pending {
             Poll::Pending
@@ -544,12 +491,13 @@ where
 {
     let (new_sink_sender, new_sink_receiver) = mpsc::unbounded_channel();
     let (membership_sender, membership_receiver) = mpsc::unbounded_channel();
+    let (item_sender, item_receiver) = mpsc::unbounded_channel();
 
     let source = TcpMultiConnectionSource {
         listener,
         next_connection_id: 0,
-        active_connections: Vec::new(),
-        poll_cursor: 0,
+        item_sender,
+        item_receiver,
         new_sink_sender,
         membership_sender,
     };
@@ -557,6 +505,7 @@ where
     let sink = TcpMultiConnectionSink {
         connection_sinks: HashMap::new(),
         new_sink_receiver,
+        dirty_ids: HashSet::new(),
         _marker: std::marker::PhantomData,
     };
 

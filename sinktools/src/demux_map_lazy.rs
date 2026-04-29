@@ -3,7 +3,7 @@ use core::fmt::Debug;
 use core::hash::Hash;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{Sink, ready_both};
 
@@ -11,6 +11,8 @@ use crate::{Sink, ready_both};
 pub struct LazyDemuxSink<Key, Si, Func> {
     sinks: HashMap<Key, Si>,
     func: Func,
+    /// Keys that have been written to since the last flush.
+    dirty_keys: HashSet<Key>,
 }
 
 impl<Key, Si, Func> LazyDemuxSink<Key, Si, Func> {
@@ -22,34 +24,34 @@ impl<Key, Si, Func> LazyDemuxSink<Key, Si, Func> {
         Self {
             sinks: HashMap::new(),
             func,
+            dirty_keys: HashSet::new(),
         }
     }
 }
 
 impl<Key, Si, Item, Func> Sink<(Key, Item)> for LazyDemuxSink<Key, Si, Func>
 where
-    Key: Eq + Hash + Debug + Unpin,
+    Key: Eq + Hash + Clone + Debug + Unpin,
     Si: Sink<Item> + Unpin,
     Func: FnMut(&Key) -> Si + Unpin,
 {
     type Error = Si::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "nondeterministic iteration order, the `try_fold` is not order-dependent"
-        )]
-        self.get_mut()
-            .sinks
-            .values_mut()
-            .try_fold(Poll::Ready(()), |poll, sink| {
-                ready_both!(poll, Pin::new(sink).poll_ready(cx)?);
+        let this = self.get_mut();
+        this.dirty_keys
+            .iter()
+            .try_fold(Poll::Ready(()), |poll, key| {
+                if let Some(sink) = this.sinks.get_mut(key) {
+                    ready_both!(poll, Pin::new(sink).poll_ready(cx)?);
+                }
                 Poll::Ready(Ok(()))
             })
     }
 
     fn start_send(self: Pin<&mut Self>, item: (Key, Item)) -> Result<(), Self::Error> {
         let this = self.get_mut();
+        this.dirty_keys.insert(item.0.clone());
         let sink = this
             .sinks
             .entry(item.0)
@@ -58,17 +60,27 @@ where
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "nondeterministic iteration order, the `try_fold` is not order-dependent"
-        )]
-        self.get_mut()
-            .sinks
-            .values_mut()
-            .try_fold(Poll::Ready(()), |poll, sink| {
-                ready_both!(poll, Pin::new(sink).poll_flush(cx)?);
-                Poll::Ready(Ok(()))
-            })
+        let this = self.get_mut();
+        let mut any_pending = false;
+        this.dirty_keys.retain(|key| {
+            if let Some(sink) = this.sinks.get_mut(key) {
+                match Pin::new(sink).poll_flush(cx) {
+                    Poll::Ready(Ok(())) => false,
+                    Poll::Ready(Err(_)) => false,
+                    Poll::Pending => {
+                        any_pending = true;
+                        true
+                    }
+                }
+            } else {
+                false
+            }
+        });
+        if any_pending {
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(()))
+        }
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -91,7 +103,7 @@ where
 /// This requires sinks `Si` to be `Unpin`. If your sinks are not `Unpin`, first wrap them in `Box::pin` to make them `Unpin`.
 pub fn demux_map_lazy<Key, Si, Item, Func>(func: Func) -> LazyDemuxSink<Key, Si, Func>
 where
-    Key: Eq + Hash + Debug + Unpin,
+    Key: Eq + Hash + Clone + Debug + Unpin,
     Si: Sink<Item> + Unpin,
     Func: FnMut(&Key) -> Si + Unpin,
 {
