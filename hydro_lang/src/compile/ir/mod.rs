@@ -757,6 +757,10 @@ pub enum HydroRoot {
         input: Box<HydroNode>,
         op_metadata: HydroIrOpMetadata,
     },
+    TriggerNextTick {
+        input: Box<HydroNode>,
+        op_metadata: HydroIrOpMetadata,
+    },
 }
 
 impl HydroRoot {
@@ -1164,7 +1168,8 @@ impl HydroRoot {
             | HydroRoot::DestSink { input, .. }
             | HydroRoot::CycleSink { input, .. }
             | HydroRoot::EmbeddedOutput { input, .. }
-            | HydroRoot::Null { input, .. } => {
+            | HydroRoot::Null { input, .. }
+            | HydroRoot::TriggerNextTick { input, .. } => {
                 transform(input, seen_tees);
             }
         }
@@ -1228,6 +1233,10 @@ impl HydroRoot {
                 op_metadata: op_metadata.clone(),
             },
             HydroRoot::Null { input, op_metadata } => HydroRoot::Null {
+                input: Box::new(input.deep_clone(seen_tees)),
+                op_metadata: op_metadata.clone(),
+            },
+            HydroRoot::TriggerNextTick { input, op_metadata } => HydroRoot::TriggerNextTick {
                 input: Box::new(input.deep_clone(seen_tees)),
                 op_metadata: op_metadata.clone(),
             },
@@ -1442,6 +1451,30 @@ impl HydroRoot {
 
                 *next_stmt_id += 1;
             }
+
+            HydroRoot::TriggerNextTick { input, .. } => {
+                let input_ident =
+                    input.emit_core(builders_or_callback, seen_tees, built_tees, next_stmt_id);
+
+                match builders_or_callback {
+                    BuildersOrCallback::Builders(graph_builders) => {
+                        graph_builders
+                            .get_dfir_mut(&input.metadata().location_id)
+                            .add_dfir(
+                                parse_quote! {
+                                    #input_ident -> defer_tick() -> for_each(|_| {});
+                                },
+                                None,
+                                Some(&next_stmt_id.to_string()),
+                            );
+                    }
+                    BuildersOrCallback::Callback(leaf_callback, _) => {
+                        leaf_callback(self, next_stmt_id);
+                    }
+                }
+
+                *next_stmt_id += 1;
+            }
         }
     }
 
@@ -1452,7 +1485,8 @@ impl HydroRoot {
             | HydroRoot::DestSink { op_metadata, .. }
             | HydroRoot::CycleSink { op_metadata, .. }
             | HydroRoot::EmbeddedOutput { op_metadata, .. }
-            | HydroRoot::Null { op_metadata, .. } => op_metadata,
+            | HydroRoot::Null { op_metadata, .. }
+            | HydroRoot::TriggerNextTick { op_metadata, .. } => op_metadata,
         }
     }
 
@@ -1463,7 +1497,8 @@ impl HydroRoot {
             | HydroRoot::DestSink { op_metadata, .. }
             | HydroRoot::CycleSink { op_metadata, .. }
             | HydroRoot::EmbeddedOutput { op_metadata, .. }
-            | HydroRoot::Null { op_metadata, .. } => op_metadata,
+            | HydroRoot::Null { op_metadata, .. }
+            | HydroRoot::TriggerNextTick { op_metadata, .. } => op_metadata,
         }
     }
 
@@ -1474,7 +1509,8 @@ impl HydroRoot {
             | HydroRoot::DestSink { input, .. }
             | HydroRoot::CycleSink { input, .. }
             | HydroRoot::EmbeddedOutput { input, .. }
-            | HydroRoot::Null { input, .. } => input,
+            | HydroRoot::Null { input, .. }
+            | HydroRoot::TriggerNextTick { input, .. } => input,
         }
     }
 
@@ -1492,6 +1528,7 @@ impl HydroRoot {
                 format!("EmbeddedOutput({})", ident)
             }
             HydroRoot::Null { .. } => "Null".to_owned(),
+            HydroRoot::TriggerNextTick { .. } => "TriggerNextTick".to_owned(),
         }
     }
 
@@ -1503,7 +1540,8 @@ impl HydroRoot {
             HydroRoot::SendExternal { .. }
             | HydroRoot::CycleSink { .. }
             | HydroRoot::EmbeddedOutput { .. }
-            | HydroRoot::Null { .. } => {}
+            | HydroRoot::Null { .. }
+            | HydroRoot::TriggerNextTick { .. } => {}
         }
     }
 }

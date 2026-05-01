@@ -933,6 +933,15 @@ impl HydroRoot {
                 None,
                 NodeLabel::static_label("null".to_owned()),
             ),
+
+            HydroRoot::TriggerNextTick { input, .. } => build_sink_node(
+                structure,
+                seen_tees,
+                config,
+                input,
+                None,
+                NodeLabel::static_label("trigger_next_tick".to_owned()),
+            ),
         }
     }
 }

@@ -92,12 +92,34 @@ where
     let protocol_inputs = workload_generator(
         new_payload_ids.merge_unordered(protocol_outputs.map(q!(|payload| Some(payload)))),
     );
+    // Limit to 1 input sent per tick so:
+    // 1. Output batch size doesn't determine input batch size
+    // 2. More closely emulates actual distinct clients (that send at slightly different paces)
+    let protocol_inputs_one_per_tick = sliced! {
+        let protocol_inputs = use(protocol_inputs, nondet!(/** Is unaffected by batching. */));
+        let mut queued_inputs = use::state_null::<Stream<(u32, Input), Tick<_>, Bounded, TotalOrder>>();
+
+        let new_inputs = protocol_inputs
+            .entries()
+            .assume_ordering::<TotalOrder>(nondet!(/** Doesn't matter which one is outputted first */));
+        let all_inputs = queued_inputs.chain(new_inputs);
+        let ordered_inputs = all_inputs.enumerate();
+        let (next_input_out, persisted_inputs) = ordered_inputs
+            .partition(q!(|(index, _)| *index == 0)); // Only take 1 input per tick
+
+        queued_inputs = persisted_inputs.map(q!(|(_, input)| input));
+        next_input_out
+    }
+    .map(q!(|(_, input)| input))
+    .into_keyed()
+    .weaken_ordering();
+
     // Feed new payloads to the protocol
-    let protocol_outputs = protocol(protocol_inputs.clone());
+    let protocol_outputs = protocol(protocol_inputs_one_per_tick.clone());
     protocol_outputs_complete.complete(protocol_outputs.clone());
 
     // Persist start latency, overwrite on new value. Memory footprint = O(num_clients_per_node)
-    let start_times = protocol_inputs.fold(
+    let start_times = protocol_inputs_one_per_tick.fold(
         q!(|| Instant::now()),
         q!(
             |curr, _new| {

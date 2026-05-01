@@ -1511,6 +1511,37 @@ where
             },
         )
     }
+
+    /// Triggers execution in the next tick by feeding this optional through
+    /// a `defer_tick()` into a null sink. This is useful for ensuring that
+    /// a tick transition occurs even when no other downstream consumers exist.
+    ///
+    /// # Example
+    /// ```rust
+    /// # #[cfg(feature = "deploy")] {
+    /// # use hydro_lang::prelude::*;
+    /// # use futures::StreamExt;
+    /// # tokio_test::block_on(hydro_lang::test_util::stream_transform_test(|process| {
+    /// let tick = process.tick();
+    /// let first_tick_val = tick.optional_first_tick(q!(42));
+    /// // forces the second tick to run
+    /// first_tick_val.clone().trigger_next_tick();
+    /// // the deferred value appears on the second tick
+    /// first_tick_val.defer_tick().all_ticks()
+    /// # }, |mut stream| async move {
+    /// // [42]
+    /// # assert_eq!(stream.next().await.unwrap(), 42);
+    /// # }));
+    /// # }
+    /// ```
+    pub fn trigger_next_tick(self) {
+        self.flow_state
+            .borrow_mut()
+            .push_root(HydroRoot::TriggerNextTick {
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                op_metadata: HydroIrOpMetadata::new(),
+            });
+    }
 }
 
 #[cfg(test)]
