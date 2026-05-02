@@ -11,7 +11,7 @@ use crate::{No, Yes};
 
 /// Maximum number of messages to pull from a stream per tick.
 /// Adjust this to control how many network messages are consumed at once.
-pub const MAX_MESSAGES_PER_PULL_BATCH: usize = 1024;
+pub const MAX_MESSAGES_PER_PULL_BATCH: usize = 32;
 
 pin_project! {
     /// A `Pull` implementation that wraps a `Stream` and a `Waker`.
