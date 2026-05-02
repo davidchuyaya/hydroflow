@@ -7,31 +7,19 @@ use super::{
 
 /// > 0 input streams, 1 output stream
 ///
-/// > Arguments: The receive end of a tokio channel
+/// > Arguments: A stream and a batch limit (usize)
 ///
-/// Given a [`Stream`](https://docs.rs/futures/latest/futures/stream/trait.Stream.html)
-/// created in Rust code, `source_stream`
-/// is passed the receive endpoint of the channel and emits each of the
-/// elements it receives downstream.
-///
-/// ```rustbook
-/// let (input_send, input_recv) = dfir_rs::util::unbounded_channel::<&str>();
-/// let mut flow = dfir_rs::dfir_syntax! {
-///     source_stream(input_recv) -> map(|x| x.to_uppercase())
-///         -> for_each(|x| println!("{}", x));
-/// };
-/// input_send.send("Hello").unwrap();
-/// input_send.send("World").unwrap();
-/// flow.run_available();
-/// ```
-pub const SOURCE_STREAM: OperatorConstraints = OperatorConstraints {
-    name: "source_stream",
+/// Like [`source_stream`](super::source_stream::SOURCE_STREAM) but caps the number of items
+/// pulled per tick to the given `batch_limit`. When the limit is reached the waker is
+/// triggered so remaining data is processed on the next tick.
+pub const SOURCE_STREAM_BATCHED: OperatorConstraints = OperatorConstraints {
+    name: "source_stream_batched",
     categories: &[OperatorCategory::Source],
     hard_range_inn: RANGE_0,
     soft_range_inn: RANGE_0,
     hard_range_out: RANGE_1,
     soft_range_out: RANGE_1,
-    num_args: 1,
+    num_args: 2,
     persistence_args: RANGE_0,
     type_args: RANGE_0,
     is_external_input: true,
@@ -50,6 +38,7 @@ pub const SOURCE_STREAM: OperatorConstraints = OperatorConstraints {
                },
                _| {
         let receiver = &arguments[0];
+        let batch_limit = &arguments[1];
         let stream_ident = wc.make_ident("stream");
         let write_prologue = quote_spanned! {op_span=>
             let mut #stream_ident = {
@@ -66,7 +55,7 @@ pub const SOURCE_STREAM: OperatorConstraints = OperatorConstraints {
             let #ident = #root::dfir_pipes::pull::stream_ready(
                 &mut #stream_ident,
                 #context.waker(),
-                usize::MAX,
+                #batch_limit,
             );
         };
         Ok(OperatorWriteOutput {

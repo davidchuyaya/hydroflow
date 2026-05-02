@@ -354,6 +354,7 @@ declare_ops![
     source_json::SOURCE_JSON,
     source_stdin::SOURCE_STDIN,
     source_stream::SOURCE_STREAM,
+    source_stream_batched::SOURCE_STREAM_BATCHED,
     source_stream_serde::SOURCE_STREAM_SERDE,
     state::STATE,
     state_by::STATE_BY,

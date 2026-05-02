@@ -16,7 +16,7 @@ use super::compiled::CompiledFlow;
 use super::deploy_provider::{
     ClusterSpec, Deploy, ExternalSpec, IntoProcessSpec, Node, ProcessSpec, RegisterPort,
 };
-use super::ir::HydroRoot;
+use super::ir::{HydroNode, HydroRoot, traverse_dfir};
 use crate::live_collections::stream::{Ordering, Retries};
 use crate::location::dynamic::LocationId;
 use crate::location::external_process::{
@@ -79,6 +79,7 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
         mut self,
         process_loc_key: LocationKey,
         spec: impl IntoProcessSpec<'a, D>,
+        batch_limit: Option<usize>,
     ) -> Self {
         assert_eq!(
             Some(&LocationType::Process),
@@ -90,6 +91,9 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
             spec.into_process_spec()
                 .build(process_loc_key, &self.location_names[process_loc_key]),
         );
+        if let Some(limit) = batch_limit {
+            self.set_batch_limit(process_loc_key, limit);
+        }
         self
     }
 
@@ -126,6 +130,7 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
         mut self,
         cluster_loc_key: LocationKey,
         spec: impl ClusterSpec<'a, D>,
+        batch_limit: Option<usize>,
     ) -> Self {
         assert_eq!(
             Some(&LocationType::Cluster),
@@ -136,6 +141,9 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
             cluster_loc_key,
             spec.build(cluster_loc_key, &self.location_names[cluster_loc_key]),
         );
+        if let Some(limit) = batch_limit {
+            self.set_batch_limit(cluster_loc_key, limit);
+        }
         self
     }
 
@@ -242,6 +250,26 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
     /// Adds a [`Sidecar`] to a specific cluster in the flow.
     pub fn with_sidecar_cluster(self, cluster: &Cluster<()>, sidecar: &impl Sidecar) -> Self {
         self.with_sidecar_internal(cluster.key, sidecar)
+    }
+
+    /// Sets the network batch limit on all `Network` nodes targeting the given location.
+    fn set_batch_limit(&mut self, loc_key: LocationKey, batch_limit: usize) {
+        traverse_dfir(
+            &mut self.ir,
+            |_, _| {},
+            |node, _| {
+                if let HydroNode::Network {
+                    batch_limit: bl,
+                    metadata,
+                    ..
+                } = node
+                {
+                    if metadata.location_id.root().key() == loc_key {
+                        *bl = Some(batch_limit);
+                    }
+                }
+            },
+        );
     }
 
     /// Compiles the flow into DFIR ([`dfir_lang::graph::DfirGraph`]) without networking.

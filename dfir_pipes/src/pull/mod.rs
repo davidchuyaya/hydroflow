@@ -656,15 +656,16 @@ pub const fn stream_compat<Pul: Pull>(pull: Pul) -> StreamCompat<Pul> {
     StreamCompat::new(pull)
 }
 
-/// Creates a pull from a `futures::Stream` with a custom waker.
+/// Creates a pull from a `futures::Stream` with a custom waker and batch limit.
 ///
 /// This variant uses a provided waker function instead of requiring a context.
 /// When the stream returns `Pending`, this pull treats it as ended (non-blocking).
-pub const fn stream_ready<S>(stream: S, waker: Waker) -> StreamReady<S>
+/// `batch_limit` caps how many items are yielded per pull batch; use `usize::MAX` for unlimited.
+pub const fn stream_ready<S>(stream: S, waker: Waker, batch_limit: usize) -> StreamReady<S>
 where
     S: futures_core::stream::Stream,
 {
-    StreamReady::new(stream, waker)
+    StreamReady::new(stream, waker, batch_limit)
 }
 
 /// Creates a synchronous pull from a closure.

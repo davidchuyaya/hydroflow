@@ -452,6 +452,7 @@ pub trait DfirBuilder {
         deserialize: Option<&DebugExpr>,
         tag_id: usize,
         networking_info: &crate::networking::NetworkingInfo,
+        batch_limit: Option<usize>,
     );
 
     fn create_external_source(
@@ -608,6 +609,7 @@ impl DfirBuilder for SecondaryMap<LocationKey, FlatGraphBuilder> {
         deserialize: Option<&DebugExpr>,
         tag_id: usize,
         _networking_info: &crate::networking::NetworkingInfo,
+        batch_limit: Option<usize>,
     ) {
         let sender_builder = self.get_dfir_mut(from);
         if let Some(serialize_pipeline) = serialize {
@@ -630,10 +632,11 @@ impl DfirBuilder for SecondaryMap<LocationKey, FlatGraphBuilder> {
         }
 
         let receiver_builder = self.get_dfir_mut(to);
+        let limit = batch_limit.unwrap_or(usize::MAX);
         if let Some(deserialize_pipeline) = deserialize {
             receiver_builder.add_dfir(
                 parse_quote! {
-                    #out_ident = source_stream(#source) -> map(#deserialize_pipeline);
+                    #out_ident = source_stream_batched(#source, #limit) -> map(#deserialize_pipeline);
                 },
                 None,
                 Some(&format!("recv{}", tag_id)),
@@ -641,7 +644,7 @@ impl DfirBuilder for SecondaryMap<LocationKey, FlatGraphBuilder> {
         } else {
             receiver_builder.add_dfir(
                 parse_quote! {
-                    #out_ident = source_stream(#source);
+                    #out_ident = source_stream_batched(#source, #limit);
                 },
                 None,
                 Some(&format!("recv{}", tag_id)),
@@ -2192,6 +2195,9 @@ pub enum HydroNode {
         serialize_fn: Option<DebugExpr>,
         instantiate_fn: DebugInstantiate,
         deserialize_fn: Option<DebugExpr>,
+        /// Maximum messages to pull from this network source per tick.
+        /// `None` means unlimited (`usize::MAX`).
+        batch_limit: Option<usize>,
         input: Box<HydroNode>,
         metadata: HydroIrMetadata,
     },
@@ -2654,6 +2660,7 @@ impl HydroNode {
                 serialize_fn,
                 instantiate_fn,
                 deserialize_fn,
+                batch_limit,
                 input,
                 metadata,
             } => HydroNode::Network {
@@ -2662,6 +2669,7 @@ impl HydroNode {
                 serialize_fn: serialize_fn.clone(),
                 instantiate_fn: instantiate_fn.clone(),
                 deserialize_fn: deserialize_fn.clone(),
+                batch_limit: *batch_limit,
                 input: Box::new(input.deep_clone(seen_tees)),
                 metadata: metadata.clone(),
             },
@@ -4097,6 +4105,7 @@ impl HydroNode {
                         serialize_fn: serialize_pipeline,
                         instantiate_fn,
                         deserialize_fn: deserialize_pipeline,
+                        batch_limit,
                         input,
                         ..
                     } => {
@@ -4129,6 +4138,7 @@ impl HydroNode {
                                     deserialize_pipeline.as_ref(),
                                     *next_stmt_id,
                                     networking_info,
+                                    *batch_limit,
                                 );
                             }
                             BuildersOrCallback::Callback(_, node_callback) => {

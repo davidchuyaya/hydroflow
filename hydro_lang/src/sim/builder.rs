@@ -975,6 +975,7 @@ impl DfirBuilder for SimBuilder {
         deserialize: Option<&DebugExpr>,
         tag_id: usize,
         networking_info: &crate::networking::NetworkingInfo,
+        _batch_limit: Option<usize>,
     ) {
         use crate::networking::{NetworkingInfo, TcpFault};
         match networking_info {
