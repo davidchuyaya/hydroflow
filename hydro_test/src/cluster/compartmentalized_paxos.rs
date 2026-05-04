@@ -1,10 +1,10 @@
 use std::collections::HashMap;
+use std::hash::Hash;
 
 use hydro_lang::live_collections::stream::NoOrder;
 use hydro_lang::location::{Atomic, Location, MemberId};
 use hydro_lang::prelude::*;
 use hydro_std::quorum::collect_quorum;
-use hydro_std::request_response::join_responses;
 use serde::{Deserialize, Serialize};
 
 use super::paxos::{
@@ -56,7 +56,7 @@ impl<'a> PaxosLike<'a> for CoreCompartmentalizedPaxos<'a> {
         ballot.map(q!(|ballot| ballot.proposer_id))
     }
 
-    fn build<P: PaxosPayload>(
+    fn build<P: PaxosPayload + Hash>(
         self,
         with_ballot: impl FnOnce(
             Stream<Ballot, Cluster<'a, Self::PaxosIn>, Unbounded>,
@@ -103,7 +103,7 @@ impl<'a> PaxosLike<'a> for CoreCompartmentalizedPaxos<'a> {
     clippy::too_many_arguments,
     reason = "internal paxos code // TODO"
 )]
-pub fn compartmentalized_paxos_core<'a, P: PaxosPayload>(
+pub fn compartmentalized_paxos_core<'a, P: PaxosPayload + Hash>(
     proposers: &Cluster<'a, Proposer>,
     proxy_leaders: &Cluster<'a, ProxyLeader>,
     acceptors: &Cluster<'a, Acceptor>,
@@ -131,7 +131,6 @@ pub fn compartmentalized_paxos_core<'a, P: PaxosPayload>(
         .for_each(q!(|s| println!("{}", s)));
 
     let proposer_tick = proposers.tick();
-    let proxy_leader_tick = proxy_leaders.tick();
     let acceptor_tick = acceptors.tick();
 
     let (sequencing_max_ballot_complete_cycle, sequencing_max_ballot_forward_reference) =
@@ -181,7 +180,6 @@ pub fn compartmentalized_paxos_core<'a, P: PaxosPayload>(
         proxy_leaders,
         acceptors,
         &proposer_tick,
-        &proxy_leader_tick,
         &acceptor_tick,
         c_to_proposers,
         a_p1a,
@@ -222,12 +220,11 @@ pub fn compartmentalized_paxos_core<'a, P: PaxosPayload>(
     clippy::too_many_arguments,
     reason = "internal paxos code // TODO"
 )]
-fn sequence_payload<'a, P: PaxosPayload>(
+fn sequence_payload<'a, P: PaxosPayload + Hash>(
     proposers: &Cluster<'a, Proposer>,
     proxy_leaders: &Cluster<'a, ProxyLeader>,
     acceptors: &Cluster<'a, Acceptor>,
     proposer_tick: &Tick<Cluster<'a, Proposer>>,
-    proxy_leader_tick: &Tick<Cluster<'a, ProxyLeader>>,
     acceptor_tick: &Tick<Cluster<'a, Acceptor>>,
     c_to_proposers: Stream<P, Cluster<'a, Proposer>, Unbounded>,
     a_p1a: Stream<Ballot, Tick<Cluster<'a, Acceptor>>, Bounded, NoOrder>,
@@ -332,18 +329,6 @@ fn sequence_payload<'a, P: PaxosPayload>(
         config.acceptor_grid_cols,
     );
 
-    let pl_to_replicas = join_responses(
-        quorums.map(q!(|k| (k, ()))),
-        p_to_proxy_leaders_p2a.batch_atomic(
-            proxy_leader_tick,
-            nondet!(
-                /// The metadata will always be generated before we get a quorum
-                /// because our batch of `p_to_proxy_leaders_p2a` is at least after
-                /// what we sent to the acceptors.
-            ),
-        ),
-    );
-
     let pl_failed_p2b_to_proposer = fails
         .map(q!(|(_, ballot)| (ballot.proposer_id.clone(), ballot)))
         .inspect(q!(|(_, ballot)| println!("Failed P2b: {:?}", ballot)))
@@ -351,7 +336,7 @@ fn sequence_payload<'a, P: PaxosPayload>(
         .values();
 
     (
-        pl_to_replicas.map(q!(|((slot, _ballot), (value, _))| (slot, value))),
+        quorums.map(q!(|(slot, _ballot, value)| (slot, value))),
         a_log,
         pl_failed_p2b_to_proposer,
     )
