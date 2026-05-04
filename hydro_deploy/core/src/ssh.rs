@@ -387,10 +387,6 @@ impl<T: LaunchedSshHost> LaunchedHost for T {
         let binary_path = PathBuf::from(format!("/home/{user}/hydro-{}", binary.unique_id()));
 
         let mut command = String::new();
-        // Prepend env variables
-        for (k, v) in env {
-            command.push_str(&format!("{}={} ", k, shell_escape::unix::escape(v.into())));
-        }
 
         if let Some(core) = pin_to_core {
             command.push_str(&format!("taskset -c {core} "));
@@ -444,6 +440,13 @@ impl<T: LaunchedSshHost> LaunchedHost for T {
                 "perf record -F {frequency} -e cycles:u --call-graph dwarf,65528 -o {PERF_OUTFILE} {command}",
             );
         }
+
+        // Prepend env variables
+        let mut env_prefix = String::new();
+        for (k, v) in env {
+            env_prefix.push_str(&format!("{}={} ", k, shell_escape::unix::escape(v.into())));
+        }
+        command = format!("{}{}", env_prefix, command);
 
         let (channel, stdout, stderr) = ProgressTracker::leaf(
             format!("launching binary {}", binary_path.display()),
