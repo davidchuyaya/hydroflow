@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use std::hash::Hash;
 
 use hydro_lang::live_collections::stream::{NoOrder, TotalOrder};
 use hydro_lang::location::{Location, MemberId};
@@ -30,7 +31,7 @@ pub trait PaxosLike<'a>: Sized {
     /// During leader-reelection, the latest known leader may be stale, which may
     /// result in non-deterministic dropping of payloads.
     #[expect(clippy::type_complexity, reason = "internal paxos code // TODO")]
-    fn build<P: PaxosPayload>(
+    fn build<P: PaxosPayload + Hash>(
         self,
         payload_generator: impl FnOnce(
             Stream<Self::Ballot, Cluster<'a, Self::PaxosIn>, Unbounded>,
@@ -45,7 +46,7 @@ pub trait PaxosLike<'a>: Sized {
     /// result in non-deterministic dropping of payloads. Also, payloads across
     /// clients will be arbitrarily interleaved as they arrive at the leader.
     #[expect(clippy::type_complexity, reason = "internal paxos code // TODO")]
-    fn with_client<C: 'a, P: PaxosPayload>(
+    fn with_client<C: 'a, P: PaxosPayload + Hash>(
         self,
         clients: &Cluster<'a, C>,
         payloads: Stream<P, Cluster<'a, C>, Unbounded>,
