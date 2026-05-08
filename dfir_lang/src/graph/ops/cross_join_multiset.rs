@@ -112,7 +112,7 @@ pub const CROSS_JOIN_MULTISET: OperatorConstraints = OperatorConstraints {
         .then(|| {
             quote_spanned! {op_span=>
                 // Reschedule the subgraph lazily to ensure replay on later ticks.
-                #context.schedule_subgraph(#context.current_subgraph(), false);
+                
             }
         });
         let write_iterator_after = quote_spanned! {op_span=>
@@ -128,7 +128,6 @@ pub const CROSS_JOIN_MULTISET: OperatorConstraints = OperatorConstraints {
                 #lhs_write_tick_end
                 #rhs_write_tick_end
             },
-            ..Default::default()
         })
     },
 };

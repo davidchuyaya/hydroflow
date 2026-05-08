@@ -131,18 +131,18 @@ pub const FOLD_KEYED: OperatorConstraints = OperatorConstraints {
         let hashtable_ident = wc.make_ident("hashtable");
 
         let write_prologue = quote_spanned! {op_span=>
-            let #singleton_output_ident = ::std::cell::RefCell::new(#root::rustc_hash::FxHashMap::<#( #generic_type_args ),*>::default());
+            let mut #singleton_output_ident = #root::rustc_hash::FxHashMap::<#( #generic_type_args ),*>::default();
         };
 
         let write_tick_end = match persistence {
             Persistence::Tick => quote_spanned! {op_span=>
-                #singleton_output_ident.borrow_mut().clear();
+                #singleton_output_ident.clear();
             },
             _ => Default::default(),
         };
 
         let assign_hashtable_ident = quote_spanned! {op_span=>
-            let mut #hashtable_ident = #singleton_output_ident.borrow_mut();
+            let mut #hashtable_ident = &mut #singleton_output_ident;
         };
 
         let write_iterator = if Persistence::Mutable == persistence {
@@ -258,20 +258,11 @@ pub const FOLD_KEYED: OperatorConstraints = OperatorConstraints {
             }
         };
 
-        let write_iterator_after = match persistence {
-            Persistence::None | Persistence::Tick | Persistence::Loop => Default::default(),
-            Persistence::Static | Persistence::Mutable => quote_spanned! {op_span=>
-                // Reschedule the subgraph lazily to ensure replay on later ticks.
-                #context.schedule_subgraph(#context.current_subgraph(), false);
-            },
-        };
-
         Ok(OperatorWriteOutput {
             write_prologue,
             write_iterator,
-            write_iterator_after,
+            write_iterator_after: Default::default(),
             write_tick_end,
-            ..Default::default()
         })
     },
 };

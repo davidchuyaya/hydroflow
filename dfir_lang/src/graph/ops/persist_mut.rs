@@ -34,7 +34,7 @@ pub const PERSIST_MUT: OperatorConstraints = OperatorConstraints {
     persistence_args: RANGE_1,
     type_args: RANGE_0,
     is_external_input: false,
-    // If this is set to true, the state will need to be cleared using `#context.set_state_lifespan_hook`
+    // If this is set to true, the state will need to be cleared via `write_tick_end`
     // to prevent reading uncleared data if this subgraph doesn't run.
     // https://github.com/hydro-project/hydro/issues/1298
     // If `'tick` lifetimes are added.
@@ -113,14 +113,9 @@ pub const PERSIST_MUT: OperatorConstraints = OperatorConstraints {
             }
         };
 
-        let write_iterator_after = quote_spanned! {op_span=>
-            #context.schedule_subgraph(#context.current_subgraph(), false);
-        };
-
         Ok(OperatorWriteOutput {
             write_prologue,
             write_iterator,
-            write_iterator_after,
             ..Default::default()
         })
     },
