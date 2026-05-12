@@ -183,7 +183,7 @@ pub trait SinkBuild {
     ) -> Self::Output<demux_map::DemuxMap<Key, Si>>
     where
         Self: Sized + SinkBuild<Item = (Key, ItemVal)>,
-        Key: Eq + core::hash::Hash + core::fmt::Debug + Unpin,
+        Key: Eq + core::hash::Hash + Clone + core::fmt::Debug + Unpin,
         Si: Sink<ItemVal> + Unpin,
     {
         self.send_to(demux_map(sinks))
@@ -200,7 +200,7 @@ pub trait SinkBuild {
     ) -> Self::Output<demux_map_lazy::LazyDemuxSink<Key, Si, Func>>
     where
         Self: Sized + SinkBuild<Item = (Key, ItemVal)>,
-        Key: Eq + core::hash::Hash + core::fmt::Debug + Unpin,
+        Key: Eq + core::hash::Hash + Clone + core::fmt::Debug + Unpin,
         Si: Sink<ItemVal> + Unpin,
         Func: FnMut(&Key) -> Si + Unpin,
     {
