@@ -4141,8 +4141,8 @@ impl HydroNode {
                                                     let __reduce_keyed_fn = #f;
                                                     move |(map, opt_curr_watermark), (opt_payload, opt_watermark)| {
                                                         if let Some((k, v)) = opt_payload {
-                                                            if let Some(curr_watermark) = *opt_curr_watermark {
-                                                                if k < curr_watermark {
+                                                            if let Some(ref curr_watermark) = *opt_curr_watermark {
+                                                                if k < *curr_watermark {
                                                                     return;
                                                                 }
                                                             }
@@ -4156,8 +4156,8 @@ impl HydroNode {
                                                             }
                                                         } else {
                                                             let watermark = opt_watermark.unwrap();
-                                                            if let Some(curr_watermark) = *opt_curr_watermark {
-                                                                if watermark <= curr_watermark {
+                                                            if let Some(ref curr_watermark) = *opt_curr_watermark {
+                                                                if watermark <= *curr_watermark {
                                                                     return;
                                                                 }
                                                             }
