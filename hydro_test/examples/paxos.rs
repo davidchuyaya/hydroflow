@@ -166,6 +166,7 @@ async fn main() {
         tbh
     };
 
+    let clients_key = clients.id().key();
     let _nodes = optimized
         .with_cluster(
             &proposers,
@@ -191,6 +192,7 @@ async fn main() {
             &replicas,
             (0..f + 1).map(|i| create_trybuild_host(create_host(&mut deployment), "replicas", i)),
         )
+        .set_batch_limit_from(clients_key, 32)
         .deploy(&mut deployment);
 
     deployment.deploy().await.unwrap();
