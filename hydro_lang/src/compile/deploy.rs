@@ -79,7 +79,6 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
         mut self,
         process_loc_key: LocationKey,
         spec: impl IntoProcessSpec<'a, D>,
-        batch_limit: Option<(usize, LocationKey)>,
     ) -> Self {
         assert_eq!(
             Some(&LocationType::Process),
@@ -91,9 +90,6 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
             spec.into_process_spec()
                 .build(process_loc_key, &self.location_names[process_loc_key]),
         );
-        if let Some((limit, from_key)) = batch_limit {
-            self = self.set_batch_limit(process_loc_key, limit, from_key);
-        }
         self
     }
 
@@ -126,13 +122,10 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
 
     /// TODO(mingwei): unstable API
     #[doc(hidden)]
-    /// TODO(mingwei): unstable API
-    #[doc(hidden)]
     pub fn with_cluster_erased(
         mut self,
         cluster_loc_key: LocationKey,
         spec: impl ClusterSpec<'a, D>,
-        batch_limit: Option<(usize, LocationKey)>,
     ) -> Self {
         assert_eq!(
             Some(&LocationType::Cluster),
@@ -143,9 +136,6 @@ impl<'a, D: Deploy<'a>> DeployFlow<'a, D> {
             cluster_loc_key,
             spec.build(cluster_loc_key, &self.location_names[cluster_loc_key]),
         );
-        if let Some((limit, from_key)) = batch_limit {
-            self = self.set_batch_limit(cluster_loc_key, limit, from_key);
-        }
         self
     }
 
