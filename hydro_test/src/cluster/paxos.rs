@@ -53,7 +53,7 @@ impl PartialOrd for Ballot {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
 pub struct LogValue<P> {
     pub ballot: Ballot,
     pub value: Option<P>, // might be a hole
