@@ -387,7 +387,7 @@ fn accept(bound: AcceptedServer) -> ConnectedDirect {
             let merge_source: DynStream = Box::pin(MergeSource {
                 marker: PhantomData,
                 sources,
-                poll_cursor: 0, active_mask: 0,
+                poll_cursor: 0,
             });
 
             ConnectedDirect {
@@ -510,7 +510,7 @@ impl Connected for ConnectedDirect {
                 let merged = MergeSource {
                     marker: PhantomData,
                     sources,
-                    poll_cursor: 0, active_mask: 0,
+                    poll_cursor: 0,
                 };
 
                 ConnectedDirect {
@@ -642,17 +642,12 @@ where
     }
 }
 
-static SOCKET_TICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static SOCKET_ACTIVE_SUM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 pub struct MergeSource<T: Unpin, S: Stream<Item = T> + Send + Sync + ?Sized> {
     marker: PhantomData<T>,
     /// Ordered list for fair polling, will never be `None` at the beginning of a poll
     sources: Vec<Option<Pin<Box<S>>>>,
     /// Cursor for fair round-robin polling
     poll_cursor: usize,
-    /// Tracking: bitmask of sources active this tick (up to 64 sources)
-        active_mask: u64,
 }
 
 impl<T: Unpin, S: Stream<Item = T> + Send + Sync + ?Sized> Stream for MergeSource<T, S> {
@@ -669,14 +664,12 @@ impl<T: Unpin, S: Stream<Item = T> + Send + Sync + ?Sized> Stream for MergeSourc
             loop {
                 let current_length = me.sources.len();
                 let source = &mut me.sources[me.poll_cursor];
-                let source_idx = me.poll_cursor;
 
                 // Move cursor to next source for next poll
                 me.poll_cursor = (me.poll_cursor + 1) % current_length;
 
                 match source.as_mut().unwrap().as_mut().poll_next(cx) {
                     Poll::Ready(Some(data)) => {
-                                                { me.active_mask |= 1u64 << (source_idx as u64); }
                         out = Poll::Ready(Some(data));
                         break;
                     }
@@ -689,19 +682,6 @@ impl<T: Unpin, S: Stream<Item = T> + Send + Sync + ?Sized> Stream for MergeSourc
 
                 // Check if we've completed a full round
                 if me.poll_cursor == start_cursor {
-                    // Full round with no data = end of tick for this MergeSource
-                                        if me.active_mask != 0 {
-                        let active = me.active_mask.count_ones() as u64;
-                        SOCKET_ACTIVE_SUM.fetch_add(active, std::sync::atomic::Ordering::Relaxed);
-                        let ticks = SOCKET_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        me.active_mask = 0;
-
-                        if ticks % 200000 == 0 {
-                            let total_active = SOCKET_ACTIVE_SUM.load(std::sync::atomic::Ordering::Relaxed);
-                            let avg = total_active as f64 / ticks as f64;
-                            println!("HYDRO_SOCKET_STATS: avg_active_per_tick={:.2} ticks={}", avg, ticks);
-                        }
-                    }
                     break;
                 }
             }
@@ -834,7 +814,7 @@ where
         let muxer = MergeSource {
             marker: PhantomData,
             sources: connected_mux,
-            poll_cursor: 0, active_mask: 0,
+            poll_cursor: 0,
         };
 
         ConnectedTagged { source: muxer }
@@ -877,7 +857,7 @@ mod tests {
         let mut merge_source = MergeSource {
             marker: PhantomData,
             sources: vec![Some(stream1), Some(stream2), Some(stream3)],
-            poll_cursor: 0, active_mask: 0,
+            poll_cursor: 0,
         };
 
         let waker = Arc::new(TestWaker).into();

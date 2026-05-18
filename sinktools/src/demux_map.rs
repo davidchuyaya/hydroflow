@@ -7,16 +7,9 @@ use std::collections::HashMap;
 
 use crate::{Sink, ready_both};
 
-static SINK_TICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static SINK_ACTIVE_SUM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// Sink which receives keys paired with items `(Key, Item)`, and pushes to the corresponding output sink in a [`HashMap`] of sinks.
 pub struct DemuxMap<Key, Si> {
     sinks: HashMap<Key, Si>,
-    /// Maps each key to a stable bit index for tracking
-        key_indices: HashMap<Key, u8>,
-    /// Bitmask of sinks written to this tick
-        active_mask: u64,
 }
 
 impl<Key, Si> DemuxMap<Key, Si> {
@@ -26,16 +19,8 @@ impl<Key, Si> DemuxMap<Key, Si> {
         Key: Eq + Hash + Clone,
         Self: Sink<(Key, Item)>,
     {
-        let sinks = sinks.into();
-                let key_indices: HashMap<Key, u8> = sinks
-            .keys()
-            .enumerate()
-            .map(|(i, k)| (k.clone(), i as u8))
-            .collect();
         Self {
-            sinks,
-                        key_indices,
-                        active_mask: 0,
+            sinks: sinks.into(),
         }
     }
 }
@@ -67,31 +52,16 @@ where
             .sinks
             .get_mut(&item.0)
             .unwrap_or_else(|| panic!("`DemuxMap` missing key {:?}", item.0));
-                if let Some(&idx) = me.key_indices.get(&item.0) {
-            me.active_mask |= 1u64 << idx;
-        }
         Pin::new(sink).start_send(item.1)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let me = self.get_mut();
-                if me.active_mask != 0 {
-            let active = me.active_mask.count_ones() as u64;
-            SINK_ACTIVE_SUM.fetch_add(active, std::sync::atomic::Ordering::Relaxed);
-            let ticks = SINK_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            me.active_mask = 0;
-
-            if ticks % 200000 == 0 {
-                let total_active = SINK_ACTIVE_SUM.load(std::sync::atomic::Ordering::Relaxed);
-                let avg = total_active as f64 / ticks as f64;
-                println!("HYDRO_SINK_STATS: avg_active_per_tick={:.2} ticks={}", avg, ticks);
-            }
-        }
         #[expect(
             clippy::disallowed_methods,
             reason = "nondeterministic iteration order, the `try_fold` is not order-dependent"
         )]
-        me.sinks
+        self.get_mut()
+            .sinks
             .values_mut()
             .try_fold(Poll::Ready(()), |poll, sink| {
                 ready_both!(poll, Pin::new(sink).poll_flush(cx)?);
