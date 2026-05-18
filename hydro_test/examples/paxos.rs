@@ -37,6 +37,10 @@ struct Args {
     aws: bool,
 }
 
+const AWS_REGION: &str = "us-west-2";
+const AWS_INSTANCE_AMI: &str = "ami-055a9df0c8c9f681c"; // Amazon Linux 2
+const AWS_INSTANCE_TYPE: &str = "m5.2xlarge"; // 8 vCPU, 32 GB RAM
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -57,15 +61,14 @@ async fn main() {
                 .add()
         })
     } else if args.aws {
-        let region = "us-east-1";
-        let network = AwsNetwork::new(region, None);
+        let network = AwsNetwork::new(AWS_REGION, None);
 
         Box::new(move |deployment| -> Arc<dyn Host> {
             deployment
                 .AwsEc2Host()
-                .region(region)
-                .instance_type("t3.micro")
-                .ami("ami-0e95a5e2743ec9ec9") // Amazon Linux 2
+                .region(AWS_REGION)
+                .instance_type(AWS_INSTANCE_TYPE)
+                .ami(AWS_INSTANCE_AMI)
                 .network(network.clone())
                 .add()
         })
@@ -76,8 +79,8 @@ async fn main() {
 
     let mut builder = hydro_lang::compile::builder::FlowBuilder::new();
     let f = 1;
-    let num_clients = 3;
-    let num_clients_per_node = 100; // Change based on experiment between 1, 50, 100.
+    let num_clients = 1;
+    let num_clients_per_node = 50; // Change based on experiment between 1, 50, 100.
     let checkpoint_frequency = 1000; // Num log entries
     let i_am_leader_send_timeout = 5; // Sec
     let i_am_leader_check_timeout = 10; // Sec
@@ -192,7 +195,7 @@ async fn main() {
             &replicas,
             (0..f + 1).map(|i| create_trybuild_host(create_host(&mut deployment), "replicas", i)),
         )
-        .set_batch_limit_from(clients_key, 32)
+        .set_batch_limit_from(clients_key, 1)
         .deploy(&mut deployment);
 
     deployment.deploy().await.unwrap();

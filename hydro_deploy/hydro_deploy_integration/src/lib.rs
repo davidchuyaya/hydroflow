@@ -24,6 +24,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 pub mod multi_connection;
 pub mod single_connection;
+pub mod threaded_io;
 
 pub type InitConfig<'a> = (HashMap<String, ServerBindConfig>, Option<Cow<'a, str>>);
 
@@ -545,7 +546,7 @@ impl ConnectedSource for ConnectedDirect {
 
     fn into_source(mut self) -> DynStream {
         if let Some(s) = self.stream_sink.take() {
-            Box::pin(s)
+            Box::pin(threaded_io::offload_source(s))
         } else {
             self.source_only.take().unwrap()
         }
@@ -558,7 +559,7 @@ impl ConnectedSink for ConnectedDirect {
 
     fn into_sink(mut self) -> DynSink<Self::Input> {
         if let Some(s) = self.stream_sink.take() {
-            Box::pin(s)
+            Box::pin(threaded_io::offload_sink(s))
         } else {
             self.sink_only.take().unwrap()
         }

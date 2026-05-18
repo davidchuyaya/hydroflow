@@ -2659,6 +2659,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures",
+ "libc",
  "pin-project-lite",
  "serde",
  "sinktools",
