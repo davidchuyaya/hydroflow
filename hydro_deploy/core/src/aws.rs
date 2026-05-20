@@ -744,18 +744,13 @@ impl Host for AwsEc2Host {
             );
 
         let instance_key = format!("ec2-instance-{}", self.id);
-        let mut instance_name = format!("hydro-ec2-instance-{}", nanoid!(8, &TERRAFORM_ALPHABET));
-
-        if let Some(mut display_name) = self.display_name.clone() {
-            instance_name.push('-');
-            display_name = display_name.replace("_", "-").to_lowercase();
-
-            let num_chars_to_cut = instance_name.len() + display_name.len() - 63;
-            if num_chars_to_cut > 0 {
-                display_name.drain(0..num_chars_to_cut);
-            }
-            instance_name.push_str(&display_name);
-        }
+        let instance_name = if let Some(display_name) = self.display_name.clone() {
+            let mut name = display_name.replace("_", "-").to_lowercase();
+            name.truncate(54); // leave room for dash + 8-char id
+            format!("{}-{}", name, nanoid!(8, &TERRAFORM_ALPHABET))
+        } else {
+            format!("hydro-{}", nanoid!(8, &TERRAFORM_ALPHABET))
+        };
 
         let vpc_ref = format!("${{{}.id}}", network_resources.vpc);
         let default_sg_ref = format!("${{{}.id}}", network_resources.security_group);

@@ -12,7 +12,7 @@ use hydro_lang::viz::config::GraphConfig;
 use hydro_test::cluster::paxos::{CorePaxos, PaxosConfig};
 use stageleft::q;
 
-type HostCreator = Box<dyn Fn(&mut Deployment) -> Arc<dyn Host>>;
+type HostCreator = Box<dyn Fn(&mut Deployment, &str) -> Arc<dyn Host>>;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None, group(
@@ -40,6 +40,7 @@ struct Args {
 const AWS_REGION: &str = "us-west-2";
 const AWS_INSTANCE_AMI: &str = "ami-055a9df0c8c9f681c"; // Amazon Linux 2
 const AWS_INSTANCE_TYPE: &str = "m5.2xlarge"; // 8 vCPU, 32 GB RAM
+const NUM_CORES: usize = 8;
 
 #[tokio::main]
 async fn main() {
@@ -50,7 +51,7 @@ async fn main() {
         let network = GcpNetwork::new(project, None);
         let project = project.clone();
 
-        Box::new(move |deployment| -> Arc<dyn Host> {
+        Box::new(move |deployment, _name| -> Arc<dyn Host> {
             deployment
                 .GcpComputeEngineHost()
                 .project(&project)
@@ -63,23 +64,24 @@ async fn main() {
     } else if args.aws {
         let network = AwsNetwork::new(AWS_REGION, None);
 
-        Box::new(move |deployment| -> Arc<dyn Host> {
+        Box::new(move |deployment, name| -> Arc<dyn Host> {
             deployment
                 .AwsEc2Host()
                 .region(AWS_REGION)
                 .instance_type(AWS_INSTANCE_TYPE)
                 .ami(AWS_INSTANCE_AMI)
                 .network(network.clone())
+                .display_name(name.to_string())
                 .add()
         })
     } else {
         let localhost = deployment.Localhost();
-        Box::new(move |_| -> Arc<dyn Host> { localhost.clone() })
+        Box::new(move |_, _name| -> Arc<dyn Host> { localhost.clone() })
     };
 
     let mut builder = hydro_lang::compile::builder::FlowBuilder::new();
     let f = 1;
-    let num_clients = 1;
+    let num_clients = 2;
     let num_clients_per_node = 50; // Change based on experiment between 1, 50, 100.
     let checkpoint_frequency = 1000; // Num log entries
     let i_am_leader_send_timeout = 5; // Sec
@@ -149,10 +151,12 @@ async fn main() {
         ""
     };
     let create_trybuild_host = |host: Arc<dyn Host + 'static>, name: &str, i: usize| {
-        let mut tbh = TrybuildHost::new(host).rustflags(rustflags);
-        // Pin to core 0 on remote machines
+        let mut tbh = TrybuildHost::new(host)
+            .rustflags(rustflags)
+            .display_name(format!("{name}{i}"));
+        // Pin main thread to core 0, networking to core 1 on remote machines
         if args.gcp.is_some() || args.aws {
-            tbh = tbh.pin_to_core(0);
+            tbh = tbh.networking_cores(NUM_CORES - 1);
         }
         if args.tracing {
             tbh = tbh.tracing(
@@ -173,27 +177,27 @@ async fn main() {
     let _nodes = optimized
         .with_cluster(
             &proposers,
-            (0..f + 1).map(|i| create_trybuild_host(create_host(&mut deployment), "proposers", i)),
+            (0..f + 1).map(|i| create_trybuild_host(create_host(&mut deployment, &format!("proposers{i}")), "proposers", i)),
         )
         .with_cluster(
             &acceptors,
             (0..2 * f + 1)
-                .map(|i| create_trybuild_host(create_host(&mut deployment), "acceptors", i)),
+                .map(|i| create_trybuild_host(create_host(&mut deployment, &format!("acceptors{i}")), "acceptors", i)),
         )
         .with_cluster(
             &clients,
             (0..num_clients).map(|i| {
-                create_trybuild_host(create_host(&mut deployment), "clients", i)
+                create_trybuild_host(create_host(&mut deployment, &format!("clients{i}")), "clients", i)
                     .env("NUM_CLIENTS_PER_NODE", num_clients_per_node.to_string())
             }),
         )
         .with_process(
             &client_aggregator,
-            create_trybuild_host(create_host(&mut deployment), "client_aggregator", 0),
+            create_trybuild_host(create_host(&mut deployment, "client_aggregator0"), "client_aggregator", 0),
         )
         .with_cluster(
             &replicas,
-            (0..f + 1).map(|i| create_trybuild_host(create_host(&mut deployment), "replicas", i)),
+            (0..f + 1).map(|i| create_trybuild_host(create_host(&mut deployment, &format!("replicas{i}")), "replicas", i)),
         )
         .set_batch_limit_from(clients_key, 1)
         .deploy(&mut deployment);

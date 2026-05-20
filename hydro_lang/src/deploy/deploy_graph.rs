@@ -482,7 +482,7 @@ pub struct TrybuildHost {
     tracing: Option<TracingOptions>,
     build_envs: Vec<(String, String)>,
     env: HashMap<String, String>,
-    pin_to_core: Option<usize>,
+    networking_cores: Option<usize>,
     name_hint: Option<String>,
     cluster_idx: Option<usize>,
 }
@@ -499,7 +499,7 @@ impl From<Arc<dyn Host>> for TrybuildHost {
             tracing: None,
             build_envs: vec![],
             env: HashMap::new(),
-            pin_to_core: None,
+            networking_cores: None,
             name_hint: None,
             cluster_idx: None,
         }
@@ -518,7 +518,7 @@ impl<H: Host + 'static> From<Arc<H>> for TrybuildHost {
             tracing: None,
             build_envs: vec![],
             env: HashMap::new(),
-            pin_to_core: None,
+            networking_cores: None,
             name_hint: None,
             cluster_idx: None,
         }
@@ -538,7 +538,7 @@ impl TrybuildHost {
             tracing: None,
             build_envs: vec![],
             env: HashMap::new(),
-            pin_to_core: None,
+            networking_cores: None,
             name_hint: None,
             cluster_idx: None,
         }
@@ -629,9 +629,11 @@ impl TrybuildHost {
         Self { env, ..self }
     }
 
-    pub fn pin_to_core(self, core: usize) -> Self {
+    /// Pin the main thread to core 0 and use cores 1..=N for networking I/O threads.
+    /// If not set, no pinning is performed.
+    pub fn networking_cores(self, cores: usize) -> Self {
         Self {
-            pin_to_core: Some(core),
+            networking_cores: Some(cores),
             ..self
         }
     }
@@ -650,7 +652,7 @@ impl IntoProcessSpec<'_, HydroDeploy> for Arc<dyn Host> {
             tracing: None,
             build_envs: vec![],
             env: HashMap::new(),
-            pin_to_core: None,
+            networking_cores: None,
             name_hint: None,
             cluster_idx: None,
         }
@@ -670,7 +672,7 @@ impl<H: Host + 'static> IntoProcessSpec<'_, HydroDeploy> for Arc<H> {
             tracing: None,
             build_envs: vec![],
             env: HashMap::new(),
-            pin_to_core: None,
+            networking_cores: None,
             name_hint: None,
             cluster_idx: None,
         }
@@ -1091,7 +1093,7 @@ impl ProcessSpec<'_, HydroDeploy> for DeployProcessSpec {
 
 impl ProcessSpec<'_, HydroDeploy> for TrybuildHost {
     fn build(mut self, key: LocationKey, name_hint: &str) -> DeployNode {
-        self.name_hint = Some(format!("{} (process {})", name_hint, key));
+        self.name_hint = Some(name_hint.to_string());
         DeployNode {
             next_port: Rc::new(RefCell::new(0)),
             service_spec: Rc::new(RefCell::new(Some(CrateOrTrybuild::Trybuild(self)))),
@@ -1130,7 +1132,7 @@ impl ClusterSpec<'_, HydroDeploy> for DeployClusterSpec {
 
 impl<T: Into<TrybuildHost>, I: IntoIterator<Item = T>> ClusterSpec<'_, HydroDeploy> for I {
     fn build(self, key: LocationKey, name_hint: &str) -> DeployCluster {
-        let name_hint = format!("{} (cluster {})", name_hint, key);
+        let name_hint = name_hint.to_string();
         DeployCluster {
             key,
             next_port: Rc::new(RefCell::new(0)),
@@ -1194,8 +1196,8 @@ fn create_trybuild_service(
         ret = ret.tracing(tracing);
     }
 
-    if let Some(core) = trybuild.pin_to_core {
-        ret = ret.pin_to_core(core);
+    if let Some(cores) = trybuild.networking_cores {
+        ret = ret.env("HYDRO_NETWORKING_CORES", cores.to_string());
     }
 
     ret = ret.features(

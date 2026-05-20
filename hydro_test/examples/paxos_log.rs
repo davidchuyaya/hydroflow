@@ -145,7 +145,7 @@ async fn main() {
         let mut tbh = TrybuildHost::new(host).rustflags(rustflags);
         // Pin to core 0 on remote machines
         if args.gcp.is_some() || args.aws {
-            tbh = tbh.pin_to_core(0);
+            tbh = tbh.networking_cores(1);
         }
         if args.tracing {
             tbh = tbh.tracing(

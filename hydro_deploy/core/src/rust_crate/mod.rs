@@ -49,7 +49,6 @@ pub struct RustCrate {
     args: Vec<String>,
     display_name: Option<String>,
     env: HashMap<String, String>,
-    pin_to_core: Option<usize>,
 }
 
 impl RustCrate {
@@ -75,7 +74,6 @@ impl RustCrate {
             args: vec![],
             display_name: None,
             env: HashMap::new(),
-            pin_to_core: None,
         }
     }
 
@@ -194,11 +192,6 @@ impl RustCrate {
         self
     }
 
-    pub fn pin_to_core(mut self, core: usize) -> Self {
-        self.pin_to_core = Some(core);
-        self
-    }
-
     pub fn get_build_params(&self, target: HostTargetType) -> BuildParams {
         let (bin, example) = match &self.target {
             CrateTarget::Default => (None, None),
@@ -238,7 +231,6 @@ impl ServiceBuilder for RustCrate {
             self.display_name,
             vec![],
             self.env,
-            self.pin_to_core,
         )
     }
 }
