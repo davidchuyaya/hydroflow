@@ -14,8 +14,8 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
@@ -43,9 +43,10 @@ fn pin_thread_to_core(core: usize) {
 
 fn io_pool() -> &'static IoThreadPool {
     IO_POOL.get_or_init(|| {
-        let networking_cores = std::env::var("HYDRO_NETWORKING_CORES")
-            .ok()
-            .map(|v| v.parse::<usize>().expect("HYDRO_NETWORKING_CORES must be a number"));
+        let networking_cores = std::env::var("HYDRO_NETWORKING_CORES").ok().map(|v| {
+            v.parse::<usize>()
+                .expect("HYDRO_NETWORKING_CORES must be a number")
+        });
         let num_threads = networking_cores.unwrap_or(1);
 
         // Pin main Hydro logic thread to core 0 if networking cores are configured.
@@ -119,9 +120,10 @@ pub const HYDRO_NET_CALIBRATE_ENV: &str = "HYDRO_NET_CALIBRATE";
 fn calibrate_config() -> Option<usize> {
     static CFG: OnceLock<Option<usize>> = OnceLock::new();
     *CFG.get_or_init(|| {
-        std::env::var(HYDRO_NET_CALIBRATE_ENV)
-            .ok()
-            .map(|v| v.parse::<usize>().expect("HYDRO_NET_CALIBRATE must be a number"))
+        std::env::var(HYDRO_NET_CALIBRATE_ENV).ok().map(|v| {
+            v.parse::<usize>()
+                .expect("HYDRO_NET_CALIBRATE must be a number")
+        })
     })
 }
 
@@ -160,10 +162,12 @@ fn start_calibrate_reporter() {
                     let count = CALIBRATE_SINK_COUNT.load(Ordering::Relaxed);
                     let elapsed = now.duration_since(last).as_secs_f64();
                     let delta = count - last_count;
-                    eprintln!(
-                        "HYDRO_OPTIMIZE_THR: {:.2} requests/s",
-                        delta as f64 / elapsed,
-                    );
+                    if delta > 0 {
+                        println!(
+                            "HYDRO_OPTIMIZE_THR: {:.2} requests/s",
+                            delta as f64 / elapsed,
+                        );
+                    }
                     last = now;
                     last_count = count;
                 }
