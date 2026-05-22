@@ -4,12 +4,20 @@
 //! If `HYDRO_NETWORKING_CORES=N` is set, spawns N I/O threads pinned to cores
 //! 1..=N (main thread pins to core 0). Sockets are partitioned across threads
 //! round-robin. If unset, uses a single unpinned I/O thread.
+//!
+//! # Calibration mode
+//!
+//! If `HYDRO_NET_CALIBRATE=<size>` is set, all sources return synthetic messages
+//! of `<size>` bytes (never blocking), and all sinks count messages, printing
+//! throughput every second. This isolates main-thread processing overhead from
+//! any network or I/O thread effects.
 
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use futures::{Sink, SinkExt, Stream, StreamExt};
@@ -81,52 +89,102 @@ fn next_handle() -> &'static tokio::runtime::Handle {
 
 /// A `Stream` backed by an in-memory channel. The actual socket reads happen
 /// on an I/O thread which feeds items into this channel.
-pub struct ChannelStream {
+pub struct ChannelStreamInner {
     rx: mpsc::UnboundedReceiver<Result<BytesMut, io::Error>>,
+}
+
+/// Source stream: either a real channel-backed stream or a calibration stream.
+pub enum ChannelStream {
+    Channel(ChannelStreamInner),
+    Calibrate(CalibrateStream),
 }
 
 impl Stream for ChannelStream {
     type Item = Result<BytesMut, io::Error>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.rx.poll_recv(cx)
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.get_mut() {
+            ChannelStream::Channel(inner) => inner.rx.poll_recv(cx),
+            ChannelStream::Calibrate(s) => Pin::new(s).poll_next(cx),
+        }
     }
 }
 
 impl Unpin for ChannelStream {}
 
-/// Offload the read half of a `DynStreamSink` to an I/O thread.
-pub fn offload_source(mut source: DynStreamSink) -> ChannelStream {
-    let (tx, rx) = mpsc::unbounded_channel();
-    next_handle().spawn(async move {
-        while let Some(item) = source.next().await {
-            if tx.send(item).is_err() {
-                break;
-            }
-        }
+/// Environment variable to enable calibration mode: `HYDRO_NET_CALIBRATE=<size>`.
+pub const HYDRO_NET_CALIBRATE_ENV: &str = "HYDRO_NET_CALIBRATE";
+
+/// Returns the calibration message size if `HYDRO_NET_CALIBRATE` is set.
+fn calibrate_config() -> Option<usize> {
+    static CFG: OnceLock<Option<usize>> = OnceLock::new();
+    *CFG.get_or_init(|| {
+        std::env::var(HYDRO_NET_CALIBRATE_ENV)
+            .ok()
+            .map(|v| v.parse::<usize>().expect("HYDRO_NET_CALIBRATE must be a number"))
+    })
+}
+
+// ─── Calibration source ──────────────────────────────────────────────────────
+
+/// A stream that always returns a fixed-size message (never Pending).
+pub struct CalibrateStream {
+    msg: BytesMut,
+}
+
+impl Stream for CalibrateStream {
+    type Item = Result<BytesMut, io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Poll::Ready(Some(Ok(self.msg.clone())))
+    }
+}
+
+impl Unpin for CalibrateStream {}
+
+// ─── Calibration sink ────────────────────────────────────────────────────────
+
+static CALIBRATE_SINK_COUNT: AtomicU64 = AtomicU64::new(0);
+static CALIBRATE_REPORTER_STARTED: OnceLock<()> = OnceLock::new();
+
+fn start_calibrate_reporter() {
+    CALIBRATE_REPORTER_STARTED.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("hydro-calibrate".into())
+            .spawn(|| {
+                let mut last = Instant::now();
+                let mut last_count = 0u64;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let now = Instant::now();
+                    let count = CALIBRATE_SINK_COUNT.load(Ordering::Relaxed);
+                    let elapsed = now.duration_since(last).as_secs_f64();
+                    let delta = count - last_count;
+                    eprintln!(
+                        "HYDRO_OPTIMIZE_THR: {:.2} requests/s",
+                        delta as f64 / elapsed,
+                    );
+                    last = now;
+                    last_count = count;
+                }
+            })
+            .expect("failed to spawn calibrate reporter");
     });
-    ChannelStream { rx }
 }
 
-// ─── Sink (write) side ───────────────────────────────────────────────────────
+/// A sink that counts messages for calibration (always ready, never blocks).
+pub struct CalibrateSink;
 
-/// A `Sink` backed by an in-memory channel. The actual socket writes happen
-/// on an I/O thread which drains items from this channel.
-pub struct ChannelSink {
-    tx: mpsc::UnboundedSender<Bytes>,
-}
-
-impl Sink<Bytes> for ChannelSink {
+impl Sink<Bytes> for CalibrateSink {
     type Error = io::Error;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn start_send(self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
-        self.tx
-            .send(item)
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "I/O thread gone"))
+    fn start_send(self: Pin<&mut Self>, _item: Bytes) -> Result<(), Self::Error> {
+        CALIBRATE_SINK_COUNT.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -138,9 +196,78 @@ impl Sink<Bytes> for ChannelSink {
     }
 }
 
+/// Offload the read half of a `DynStreamSink` to an I/O thread.
+pub fn offload_source(mut source: DynStreamSink) -> ChannelStream {
+    if let Some(size) = calibrate_config() {
+        return ChannelStream::Calibrate(CalibrateStream {
+            msg: BytesMut::from(&vec![0u8; size][..]),
+        });
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    next_handle().spawn(async move {
+        while let Some(item) = source.next().await {
+            if tx.send(item).is_err() {
+                break;
+            }
+        }
+    });
+    ChannelStream::Channel(ChannelStreamInner { rx })
+}
+
+// ─── Sink (write) side ───────────────────────────────────────────────────────
+
+/// A `Sink` backed by an in-memory channel. The actual socket writes happen
+/// on an I/O thread which drains items from this channel.
+pub struct ChannelSinkInner {
+    tx: mpsc::UnboundedSender<Bytes>,
+}
+
+/// Sink: either a real channel-backed sink or a calibration counter.
+pub enum ChannelSink {
+    Channel(ChannelSinkInner),
+    Calibrate(CalibrateSink),
+}
+
+impl Sink<Bytes> for ChannelSink {
+    type Error = io::Error;
+
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
+        match self.get_mut() {
+            ChannelSink::Channel(inner) => inner
+                .tx
+                .send(item)
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "I/O thread gone")),
+            ChannelSink::Calibrate(_) => {
+                CALIBRATE_SINK_COUNT.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Unpin for ChannelSink {}
+
 /// Offload the write half of a `DynStreamSink` to an I/O thread.
 /// Batches writes: drains all available items before flushing once.
 pub fn offload_sink(mut sink: DynStreamSink) -> ChannelSink {
+    if calibrate_config().is_some() {
+        start_calibrate_reporter();
+        return ChannelSink::Calibrate(CalibrateSink);
+    }
+
     let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
     next_handle().spawn(async move {
         while let Some(item) = rx.recv().await {
@@ -157,5 +284,5 @@ pub fn offload_sink(mut sink: DynStreamSink) -> ChannelSink {
             }
         }
     });
-    ChannelSink { tx }
+    ChannelSink::Channel(ChannelSinkInner { tx })
 }
