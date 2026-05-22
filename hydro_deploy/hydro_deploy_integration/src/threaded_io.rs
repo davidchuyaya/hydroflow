@@ -162,7 +162,7 @@ fn start_calibrate_reporter() {
                     let count = CALIBRATE_SINK_COUNT.load(Ordering::Relaxed);
                     let elapsed = now.duration_since(last).as_secs_f64();
                     let delta = count - last_count;
-                    if delta > 0 {
+                    if delta > 1 {
                         println!(
                             "HYDRO_OPTIMIZE_THR: {:.2} requests/s",
                             delta as f64 / elapsed,
