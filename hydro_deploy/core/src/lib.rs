@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 
 pub mod deployment;
 pub use deployment::Deployment;
+pub use hydro_deploy_integration::threaded_io::HYDRO_NET_CALIBRATE_ENV;
 
 pub mod progress;
 
