@@ -115,6 +115,7 @@ impl Unpin for ChannelStream {}
 
 /// Environment variable to enable calibration mode: `HYDRO_NET_CALIBRATE=<size>`.
 pub const HYDRO_NET_CALIBRATE_ENV: &str = "HYDRO_NET_CALIBRATE";
+const CALIBRATE_WAKE_FREQUENCY: usize = 1000000;
 
 /// Returns the calibration message size if `HYDRO_NET_CALIBRATE` is set.
 fn calibrate_config() -> Option<usize> {
@@ -129,16 +130,24 @@ fn calibrate_config() -> Option<usize> {
 
 // ─── Calibration source ──────────────────────────────────────────────────────
 
-/// A stream that always returns a fixed-size message (never Pending).
+/// A stream that always returns a fixed-size message
 pub struct CalibrateStream {
     msg: BytesMut,
+    counter: usize,
 }
 
 impl Stream for CalibrateStream {
     type Item = Result<BytesMut, io::Error>;
 
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(Some(Ok(self.msg.clone())))
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        this.counter += 1;
+        if this.counter % CALIBRATE_WAKE_FREQUENCY == 0 {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        } else {
+            Poll::Ready(Some(Ok(this.msg.clone())))
+        }
     }
 }
 
@@ -205,6 +214,7 @@ pub fn offload_source(mut source: DynStreamSink) -> ChannelStream {
     if let Some(size) = calibrate_config() {
         return ChannelStream::Calibrate(CalibrateStream {
             msg: BytesMut::from(&vec![0u8; size][..]),
+            counter: 0,
         });
     }
 
