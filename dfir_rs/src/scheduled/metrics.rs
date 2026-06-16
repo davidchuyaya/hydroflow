@@ -186,6 +186,21 @@ impl<'a, Fut> InstrumentSubgraph<'a, Fut> {
     }
 }
 
+/// Reads the clock for duration metrics, or returns `None` when the
+/// `metrics_timing` feature is disabled (the default). When disabled this avoids
+/// the `clock_gettime` syscalls entirely; only the duration metrics are lost,
+/// the poll/idle/run counts are unaffected.
+#[cfg(feature = "metrics_timing")]
+#[inline(always)]
+fn maybe_now() -> Option<Instant> {
+    Some(Instant::now())
+}
+#[cfg(not(feature = "metrics_timing"))]
+#[inline(always)]
+fn maybe_now() -> Option<Instant> {
+    None
+}
+
 impl<'a, Fut> Future for InstrumentSubgraph<'a, Fut>
 where
     Fut: Future,
@@ -194,26 +209,31 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        // End idle duration.
-        if let Some(idle_start) = this.idle_start {
+        // End idle period. `idle_start` is `Some` only after a prior poll and
+        // only when `metrics_timing` is enabled (see `maybe_now`).
+        if let Some(_idle_start) = this.idle_start {
+            #[cfg(feature = "metrics_timing")]
             this.metrics
                 .total_idle_duration
-                .update(|x| x + idle_start.elapsed());
+                .update(|x| x + _idle_start.elapsed());
             this.metrics.total_idle_count.update(|x| x + 1);
         }
 
-        // Begin poll duration.
+        // Begin poll period.
+        #[cfg(feature = "metrics_timing")]
         let poll_start = Instant::now();
         let out = this.future.poll(cx);
 
-        // End poll duration.
+        // End poll period.
+        #[cfg(feature = "metrics_timing")]
         this.metrics
             .total_poll_duration
             .update(|x| x + poll_start.elapsed());
         this.metrics.total_poll_count.update(|x| x + 1);
 
-        // Begin idle duration.
-        this.idle_start.replace(Instant::now());
+        // Begin idle period (recorded for the next poll). `None` when timing is
+        // disabled, which also suppresses the idle-count increment above.
+        *this.idle_start = maybe_now();
 
         out
     }

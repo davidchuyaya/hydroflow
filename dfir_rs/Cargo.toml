@@ -18,6 +18,12 @@ meta = [ "dfir_lang/codegen" ]
 macros = [ "dfir_macro" ]
 dfir_macro = [ "dep:dfir_macro" ]
 debugging = [ "dfir_lang/debugging" ]
+# Per-subgraph poll/idle duration timing in `InstrumentSubgraph`. Off by default
+# because it calls `Instant::now()` (clock_gettime) ~4x per subgraph per tick,
+# which dominates CPU when ticks are small. Run/poll/idle *counts* are always
+# tracked; only the duration metrics require this feature. When off, the EMF
+# `TotalPollDuration`/`TotalIdleDuration` metrics report zero.
+metrics_timing = []
 
 [package.metadata.docs.rs]
 all-features = true
