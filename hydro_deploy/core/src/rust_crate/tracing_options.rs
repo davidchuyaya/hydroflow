@@ -55,13 +55,23 @@ pub struct TracingOptions {
 ///
 /// Uses `apt` to install `linux-perf` and `binutils`, installs `stackcollapse-perf.pl` for remote
 /// folding, sets kernel parameters to allow tracing, and disables `kptr_restrict`.
-pub const DEBIAN_PERF_SETUP_COMMAND: &str = "sudo sh -c 'apt update && apt install -y linux-perf binutils perl curl && ([ -x /usr/local/bin/stackcollapse-perf.pl ] || (curl -fsSL https://raw.githubusercontent.com/brendangregg/FlameGraph/master/stackcollapse-perf.pl -o /usr/local/bin/stackcollapse-perf.pl && chmod +x /usr/local/bin/stackcollapse-perf.pl)) && echo -1 > /proc/sys/kernel/perf_event_paranoid && echo 0 > /proc/sys/kernel/kptr_restrict'";
+///
+/// Idempotent: the `apt` install is skipped entirely when the tools are already present (hosts are
+/// reused across runs), which avoids re-acquiring the dpkg lock on every binary launch — concurrent
+/// launches on a shared host would otherwise collide on the lock and fail. A single retry covers a
+/// transient lock on the very first install.
+pub const DEBIAN_PERF_SETUP_COMMAND: &str = "sudo sh -c 'if ! (command -v perf >/dev/null 2>&1 && command -v perl >/dev/null 2>&1 && command -v addr2line >/dev/null 2>&1); then apt update && apt install -y linux-perf binutils perl curl || (sleep 5; apt update && apt install -y linux-perf binutils perl curl); fi && ([ -x /usr/local/bin/stackcollapse-perf.pl ] || (curl -fsSL https://raw.githubusercontent.com/brendangregg/FlameGraph/master/stackcollapse-perf.pl -o /usr/local/bin/stackcollapse-perf.pl && chmod +x /usr/local/bin/stackcollapse-perf.pl)) && echo -1 > /proc/sys/kernel/perf_event_paranoid && echo 0 > /proc/sys/kernel/kptr_restrict'";
 
 /// A command to run on Amazon Linux 2 (AL2) systems to set up `perf` for tracing.
 ///
 /// Uses `yum` to install `perf`, installs `stackcollapse-perf.pl` for remote folding, sets kernel
 /// parameters to allow tracing, and disables `kptr_restrict`.
-pub const AL2_PERF_SETUP_COMMAND: &str = "sudo sh -c 'yum install -y perf perl && ([ -x /usr/local/bin/stackcollapse-perf.pl ] || (curl -fsSL https://raw.githubusercontent.com/brendangregg/FlameGraph/master/stackcollapse-perf.pl -o /usr/local/bin/stackcollapse-perf.pl && chmod +x /usr/local/bin/stackcollapse-perf.pl)) && echo -1 > /proc/sys/kernel/perf_event_paranoid && echo 0 > /proc/sys/kernel/kptr_restrict'";
+///
+/// Idempotent: the `yum` install is skipped entirely when the tools are already present (hosts are
+/// reused across runs), which avoids re-acquiring the yum/dnf lock on every binary launch —
+/// concurrent launches on a shared host would otherwise collide on the lock and fail. A single
+/// retry covers a transient lock on the very first install.
+pub const AL2_PERF_SETUP_COMMAND: &str = "sudo sh -c 'if ! (command -v perf >/dev/null 2>&1 && command -v perl >/dev/null 2>&1); then yum install -y perf perl || (sleep 5; yum install -y perf perl); fi && ([ -x /usr/local/bin/stackcollapse-perf.pl ] || (curl -fsSL https://raw.githubusercontent.com/brendangregg/FlameGraph/master/stackcollapse-perf.pl -o /usr/local/bin/stackcollapse-perf.pl && chmod +x /usr/local/bin/stackcollapse-perf.pl)) && echo -1 > /proc/sys/kernel/perf_event_paranoid && echo 0 > /proc/sys/kernel/kptr_restrict'";
 
 /// A command to run on Amazon Linux 2023 to set up `perf` for tracing.
 ///
