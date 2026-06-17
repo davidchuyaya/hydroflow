@@ -361,7 +361,7 @@ fn accept(bound: AcceptedServer) -> ConnectedDirect {
             #[cfg(unix)]
             {
                 ConnectedDirect {
-                    stream_sink: Some(Box::pin(unix_bytes(stream))),
+                    socket: Some(OffloadSocket::Unix(stream.into_std().unwrap())),
                     source_only: None,
                     sink_only: None,
                 }
@@ -374,7 +374,7 @@ fn accept(bound: AcceptedServer) -> ConnectedDirect {
             }
         }
         AcceptedServer::TcpPort(stream) => ConnectedDirect {
-            stream_sink: Some(Box::pin(tcp_bytes(stream))),
+            socket: Some(OffloadSocket::Tcp(stream.into_std().unwrap())),
             source_only: None,
             sink_only: None,
         },
@@ -391,7 +391,7 @@ fn accept(bound: AcceptedServer) -> ConnectedDirect {
             });
 
             ConnectedDirect {
-                stream_sink: None,
+                socket: None,
                 source_only: Some(merge_source),
                 sink_only: None,
             }
@@ -457,15 +457,45 @@ async fn async_retry<T, E, F: Future<Output = Result<T, E>>>(
     thunk().await
 }
 
+/// A socket whose I/O will be offloaded to a dedicated thread. Held as the std
+/// (deregistered) socket so it can be re-registered on the I/O thread's reactor
+/// *inside the offload task*, rather than on the runtime that accepted/connected
+/// it. This keeps the accepting/main runtime off the socket's readiness path.
+enum OffloadSocket {
+    Tcp(std::net::TcpStream),
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixStream),
+}
+
+impl OffloadSocket {
+    /// Re-register the socket on the *current* tokio runtime and length-delimit
+    /// it. Call this on the runtime that should own the socket's readiness (the
+    /// I/O thread for offloaded paths; the caller's runtime for the split path).
+    fn into_framed(self) -> DynStreamSink {
+        match self {
+            OffloadSocket::Tcp(std) => {
+                std.set_nonblocking(true).unwrap();
+                Box::pin(tcp_bytes(TcpStream::from_std(std).unwrap()))
+            }
+            #[cfg(unix)]
+            OffloadSocket::Unix(std) => {
+                std.set_nonblocking(true).unwrap();
+                Box::pin(unix_bytes(UnixStream::from_std(std).unwrap()))
+            }
+        }
+    }
+}
+
 pub struct ConnectedDirect {
-    stream_sink: Option<DynStreamSink>,
+    socket: Option<OffloadSocket>,
     source_only: Option<DynStream>,
     sink_only: Option<DynSink<Bytes>>,
 }
 
 impl ConnectedDirect {
     pub fn into_source_sink(self) -> (SplitStream<DynStreamSink>, SplitSink<DynStreamSink, Bytes>) {
-        let (sink, stream) = self.stream_sink.unwrap().split();
+        // Not offloaded: frame/register on the caller's runtime, then split.
+        let (sink, stream) = self.socket.unwrap().into_framed().split();
         (stream, sink)
     }
 }
@@ -477,7 +507,7 @@ impl Connected for ConnectedDirect {
                 #[cfg(unix)]
                 {
                     ConnectedDirect {
-                        stream_sink: Some(Box::pin(unix_bytes(stream))),
+                        socket: Some(OffloadSocket::Unix(stream.into_std().unwrap())),
                         source_only: None,
                         sink_only: None,
                     }
@@ -492,7 +522,7 @@ impl Connected for ConnectedDirect {
             Connection::AsClient(ClientConnection::TcpPort(stream)) => {
                 stream.set_nodelay(true).unwrap();
                 ConnectedDirect {
-                    stream_sink: Some(Box::pin(tcp_bytes(stream))),
+                    socket: Some(OffloadSocket::Tcp(stream.into_std().unwrap())),
                     source_only: None,
                     sink_only: None,
                 }
@@ -514,7 +544,7 @@ impl Connected for ConnectedDirect {
                 };
 
                 ConnectedDirect {
-                    stream_sink: None,
+                    socket: None,
                     source_only: Some(Box::pin(merged)),
                     sink_only: None,
                 }
@@ -528,7 +558,7 @@ impl Connected for ConnectedDirect {
             }
 
             Connection::AsClient(ClientConnection::Null) => ConnectedDirect {
-                stream_sink: None,
+                socket: None,
                 source_only: Some(Box::pin(stream::empty())),
                 sink_only: Some(Box::pin(IoErrorDrain {
                     marker: PhantomData,
@@ -545,8 +575,8 @@ impl ConnectedSource for ConnectedDirect {
     type Stream = DynStream;
 
     fn into_source(mut self) -> DynStream {
-        if let Some(s) = self.stream_sink.take() {
-            Box::pin(threaded_io::offload_source(s))
+        if let Some(sock) = self.socket.take() {
+            Box::pin(threaded_io::offload_source(move || sock.into_framed()))
         } else {
             self.source_only.take().unwrap()
         }
@@ -558,8 +588,8 @@ impl ConnectedSink for ConnectedDirect {
     type Sink = DynSink<Bytes>;
 
     fn into_sink(mut self) -> DynSink<Self::Input> {
-        if let Some(s) = self.stream_sink.take() {
-            Box::pin(threaded_io::offload_sink(s))
+        if let Some(sock) = self.socket.take() {
+            Box::pin(threaded_io::offload_sink(move || sock.into_framed()))
         } else {
             self.sink_only.take().unwrap()
         }

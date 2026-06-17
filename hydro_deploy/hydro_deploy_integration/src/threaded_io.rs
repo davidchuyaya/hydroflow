@@ -209,8 +209,17 @@ impl Sink<Bytes> for CalibrateSink {
     }
 }
 
-/// Offload the read half of a `DynStreamSink` to an I/O thread.
-pub fn offload_source(mut source: DynStreamSink) -> ChannelStream {
+/// Offload the read half of a socket to an I/O thread.
+///
+/// `make_source` builds (and, for a real socket, registers) the source. It runs
+/// *on the I/O thread*, so the socket's readiness is registered with this I/O
+/// thread's reactor rather than the runtime that accepted/connected it. That
+/// keeps the caller's (main) runtime entirely off the socket's readiness path —
+/// otherwise every readiness edge would be discovered by the main thread's epoll
+/// and turned into a cross-thread wakeup.
+pub fn offload_source(
+    make_source: impl FnOnce() -> DynStreamSink + Send + 'static,
+) -> ChannelStream {
     if let Some(size) = calibrate_config() {
         return ChannelStream::Calibrate(CalibrateStream {
             msg: BytesMut::from(&vec![0u8; size][..]),
@@ -220,6 +229,7 @@ pub fn offload_source(mut source: DynStreamSink) -> ChannelStream {
 
     let (tx, rx) = mpsc::unbounded_channel();
     next_handle().spawn(async move {
+        let mut source = make_source();
         while let Some(item) = source.next().await {
             if tx.send(item).is_err() {
                 break;
@@ -274,9 +284,41 @@ impl Sink<Bytes> for ChannelSink {
 
 impl Unpin for ChannelSink {}
 
-/// Offload the write half of a `DynStreamSink` to an I/O thread.
-/// Batches writes: drains all available items before flushing once.
-pub fn offload_sink(mut sink: DynStreamSink) -> ChannelSink {
+/// Number of cooperative `try_recv` attempts the I/O thread makes before parking
+/// (awaiting) when the channel is momentarily empty.
+///
+/// Spinning avoids the cross-thread eventfd wakeup the producer would otherwise
+/// trigger on every `send` (and the kernel `_raw_spin_unlock_irq`/IPI cost that
+/// wakeup incurs across pinned cores). A receiver that never `await`s the
+/// channel registers no waker, so `send` skips the wake syscall entirely. We
+/// still fall back to a parking `recv()` after the budget is exhausted so an
+/// idle system doesn't burn the core indefinitely.
+const IO_RECV_SPIN_BUDGET: usize = 256;
+
+/// Receive the next item, spinning cooperatively before parking. Yields between
+/// attempts so sibling I/O tasks sharing this single-threaded runtime still run
+/// (and the runtime still polls socket readiness for the read-side tasks).
+/// Returns `None` once the channel is closed.
+async fn recv_spin(rx: &mut mpsc::UnboundedReceiver<Bytes>) -> Option<Bytes> {
+    for _ in 0..IO_RECV_SPIN_BUDGET {
+        match rx.try_recv() {
+            Ok(item) => return Some(item),
+            Err(mpsc::error::TryRecvError::Disconnected) => return None,
+            Err(mpsc::error::TryRecvError::Empty) => tokio::task::yield_now().await,
+        }
+    }
+    // Budget exhausted: park until an item arrives or the channel closes. This
+    // is the only path that registers a waker, so it's the only path on which
+    // the producer may incur a wake syscall — rare under sustained load.
+    rx.recv().await
+}
+
+/// Offload the write half of a socket to an I/O thread.
+/// Drains all available items before flushing once.
+///
+/// `make_sink` builds (and, for a real socket, registers) the sink on the I/O
+/// thread — see [`offload_source`] for why registration must happen here.
+pub fn offload_sink(make_sink: impl FnOnce() -> DynStreamSink + Send + 'static) -> ChannelSink {
     if calibrate_config().is_some() {
         start_calibrate_reporter();
         return ChannelSink::Calibrate(CalibrateSink);
@@ -284,7 +326,10 @@ pub fn offload_sink(mut sink: DynStreamSink) -> ChannelSink {
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
     next_handle().spawn(async move {
-        while let Some(item) = rx.recv().await {
+        let mut sink = make_sink();
+        // Spin-then-park on the first item of each write burst (see `recv_spin`),
+        // then drain everything else already queued and flush once.
+        while let Some(item) = recv_spin(&mut rx).await {
             if sink.feed(item).await.is_err() {
                 break;
             }
