@@ -438,9 +438,13 @@ impl<T: LaunchedSshHost> LaunchedHost for T {
 
             // Attach perf to the command
             // Note: `LaunchedSshHost` assumes `perf` on linux.
+            // `-C 0` records only core 0 (system-wide on that CPU), matching the
+            // `sar ... -P 0` sampler: the compute (tick) thread is pinned to core 0
+            // and I/O / calibration side threads to cores 1.., so this captures the
+            // compute thread's cost and excludes the busy side threads.
             // TODO: Revert to only logging cycles in userspace? Reduces time
             command = format!(
-                "perf record -F {frequency} -e cycles --call-graph dwarf,65528 -o {PERF_OUTFILE} {command}",
+                "perf record -C 0 -F {frequency} -e cycles --call-graph dwarf,65528 -o {PERF_OUTFILE} {command}",
             );
         }
 

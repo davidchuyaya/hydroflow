@@ -35,12 +35,12 @@ pub async fn handle_fold_data(
             .map(|f| (f)())
             .unwrap_or_default();
         output_tasks.push(Box::pin(async move {
-            let writer = tokio::fs::File::create(flamegraph_outfile)
+            let writer = tokio::fs::File::create(flamegraph_outfile.clone())
                 .await?
                 .into_std()
                 .await;
             let fold_data = Arc::clone(fold_data);
-            tokio::task::spawn_blocking(move || {
+            let res = tokio::task::spawn_blocking(move || {
                 inferno::flamegraph::from_lines(
                     &mut options,
                     fold_data
@@ -50,7 +50,16 @@ pub async fn handle_fold_data(
                     writer,
                 )
             })
-            .await??;
+            .await?;
+
+            if let Err(err) = res {
+                if err.to_string().contains("No stack counts found") {
+                    eprintln!("Warning: No stack counts found for flamegraph. Flamegraph was not generated.");
+                    let _ = tokio::fs::remove_file(flamegraph_outfile).await;
+                } else {
+                    return Err(err.into());
+                }
+            }
             Ok(())
         }));
     };

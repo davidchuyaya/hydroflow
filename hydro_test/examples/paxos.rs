@@ -37,8 +37,8 @@ struct Args {
     aws: bool,
 }
 
-const AWS_REGION: &str = "us-west-2";
-const AWS_INSTANCE_AMI: &str = "ami-055a9df0c8c9f681c"; // Amazon Linux 2
+const AWS_REGION: &str = "us-east-1";
+const AWS_INSTANCE_AMI: &str = "ami-0521cb2d60cfbb1a6"; // Amazon Linux 2023
 const AWS_INSTANCE_TYPE: &str = "m5.2xlarge"; // 8 vCPU, 32 GB RAM
 const NUM_CORES: usize = 8;
 
@@ -177,27 +177,52 @@ async fn main() {
     let _nodes = optimized
         .with_cluster(
             &proposers,
-            (0..f + 1).map(|i| create_trybuild_host(create_host(&mut deployment, &format!("proposers{i}")), "proposers", i)),
+            (0..f + 1).map(|i| {
+                create_trybuild_host(
+                    create_host(&mut deployment, &format!("proposers{i}")),
+                    "proposers",
+                    i,
+                )
+            }),
         )
         .with_cluster(
             &acceptors,
-            (0..2 * f + 1)
-                .map(|i| create_trybuild_host(create_host(&mut deployment, &format!("acceptors{i}")), "acceptors", i)),
+            (0..2 * f + 1).map(|i| {
+                create_trybuild_host(
+                    create_host(&mut deployment, &format!("acceptors{i}")),
+                    "acceptors",
+                    i,
+                )
+            }),
         )
         .with_cluster(
             &clients,
             (0..num_clients).map(|i| {
-                create_trybuild_host(create_host(&mut deployment, &format!("clients{i}")), "clients", i)
-                    .env("NUM_CLIENTS_PER_NODE", num_clients_per_node.to_string())
+                create_trybuild_host(
+                    create_host(&mut deployment, &format!("clients{i}")),
+                    "clients",
+                    i,
+                )
+                .env("NUM_CLIENTS_PER_NODE", num_clients_per_node.to_string())
             }),
         )
         .with_process(
             &client_aggregator,
-            create_trybuild_host(create_host(&mut deployment, "client_aggregator0"), "client_aggregator", 0),
+            create_trybuild_host(
+                create_host(&mut deployment, "client_aggregator0"),
+                "client_aggregator",
+                0,
+            ),
         )
         .with_cluster(
             &replicas,
-            (0..f + 1).map(|i| create_trybuild_host(create_host(&mut deployment, &format!("replicas{i}")), "replicas", i)),
+            (0..f + 1).map(|i| {
+                create_trybuild_host(
+                    create_host(&mut deployment, &format!("replicas{i}")),
+                    "replicas",
+                    i,
+                )
+            }),
         )
         .set_batch_limit_from(clients_key, 1)
         .deploy(&mut deployment);

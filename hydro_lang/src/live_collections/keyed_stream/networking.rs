@@ -125,21 +125,21 @@ impl<'a, T, L, L2, B: Boundedness, O: Ordering, R: Retries>
         Stream::new(
             to.clone(),
             HydroNode::Network {
-                            name: name.map(ToOwned::to_owned),
-                            networking_info: N::networking_info(),
-                            serialize_fn: serialize_pipeline.map(|e| e.into()),
-                            instantiate_fn: DebugInstantiate::Building,
-                            deserialize_fn: deserialize_pipeline.map(|e| e.into()),
-                            batch_limit: None,
-                            input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
-                            metadata: to.new_node_metadata(Stream::<
-                                T,
-                                Cluster<'a, L2>,
-                                Unbounded,
-                                <O as MinOrder<N::OrderingGuarantee>>::Min,
-                                R,
-                            >::collection_kind()),
-                        },
+                name: name.map(ToOwned::to_owned),
+                networking_info: N::networking_info(),
+                serialize_fn: serialize_pipeline.map(|e| e.into()),
+                instantiate_fn: DebugInstantiate::Building,
+                deserialize_fn: deserialize_pipeline.map(|e| e.into()),
+                batch_limit: None,
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                metadata: to.new_node_metadata(Stream::<
+                    T,
+                    Cluster<'a, L2>,
+                    Unbounded,
+                    <O as MinOrder<N::OrderingGuarantee>>::Min,
+                    R,
+                >::collection_kind()),
+            },
         )
     }
 }
@@ -250,27 +250,27 @@ impl<'a, K, T, L, L2, B: Boundedness, O: Ordering, R: Retries>
         KeyedStream::new(
             to.clone(),
             HydroNode::Network {
-                            name: name.map(ToOwned::to_owned),
-                            networking_info: N::networking_info(),
-                            serialize_fn: serialize_pipeline.map(|e| e.into()),
-                            instantiate_fn: DebugInstantiate::Building,
-                            deserialize_fn: deserialize_pipeline.map(|e| e.into()),
-                            batch_limit: None,
-                            input: Box::new(
-                                self.entries()
-                                    .map(q!(|((id, k), v)| (id, (k, v))))
-                                    .ir_node
-                                    .replace(HydroNode::Placeholder),
-                            ),
-                            metadata: to.new_node_metadata(KeyedStream::<
-                                K,
-                                T,
-                                Cluster<'a, L2>,
-                                Unbounded,
-                                <O as MinOrder<N::OrderingGuarantee>>::Min,
-                                R,
-                            >::collection_kind()),
-                        },
+                name: name.map(ToOwned::to_owned),
+                networking_info: N::networking_info(),
+                serialize_fn: serialize_pipeline.map(|e| e.into()),
+                instantiate_fn: DebugInstantiate::Building,
+                deserialize_fn: deserialize_pipeline.map(|e| e.into()),
+                batch_limit: None,
+                input: Box::new(
+                    self.entries()
+                        .map(q!(|((id, k), v)| (id, (k, v))))
+                        .ir_node
+                        .replace(HydroNode::Placeholder),
+                ),
+                metadata: to.new_node_metadata(KeyedStream::<
+                    K,
+                    T,
+                    Cluster<'a, L2>,
+                    Unbounded,
+                    <O as MinOrder<N::OrderingGuarantee>>::Min,
+                    R,
+                >::collection_kind()),
+            },
         )
     }
 }
@@ -414,22 +414,22 @@ impl<'a, T, L, L2, B: Boundedness, O: Ordering, R: Retries>
         KeyedStream::new(
             to.clone(),
             HydroNode::Network {
-                            name: name.map(ToOwned::to_owned),
-                            networking_info: N::networking_info(),
-                            serialize_fn: serialize_pipeline.map(|e| e.into()),
-                            instantiate_fn: DebugInstantiate::Building,
-                            deserialize_fn: deserialize_pipeline.map(|e| e.into()),
-                            batch_limit: None,
-                            input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
-                            metadata: to.new_node_metadata(KeyedStream::<
-                                MemberId<L>,
-                                T,
-                                Cluster<'a, L2>,
-                                Unbounded,
-                                <O as MinOrder<N::OrderingGuarantee>>::Min,
-                                R,
-                            >::collection_kind()),
-                        },
+                name: name.map(ToOwned::to_owned),
+                networking_info: N::networking_info(),
+                serialize_fn: serialize_pipeline.map(|e| e.into()),
+                instantiate_fn: DebugInstantiate::Building,
+                deserialize_fn: deserialize_pipeline.map(|e| e.into()),
+                batch_limit: None,
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                metadata: to.new_node_metadata(KeyedStream::<
+                    MemberId<L>,
+                    T,
+                    Cluster<'a, L2>,
+                    Unbounded,
+                    <O as MinOrder<N::OrderingGuarantee>>::Min,
+                    R,
+                >::collection_kind()),
+            },
         )
     }
 }
@@ -596,21 +596,21 @@ impl<'a, K, V, L, B: Boundedness, O: Ordering, R: Retries>
         > = Stream::new(
             to.clone(),
             HydroNode::Network {
-                            name: name.map(ToOwned::to_owned),
-                            networking_info: N::networking_info(),
-                            serialize_fn: serialize_pipeline.map(|e| e.into()),
-                            instantiate_fn: DebugInstantiate::Building,
-                            deserialize_fn: deserialize_pipeline.map(|e| e.into()),
-                            batch_limit: None,
-                            input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
-                            metadata: to.new_node_metadata(Stream::<
-                                (MemberId<L>, (K, V)),
-                                Cluster<'a, L2>,
-                                Unbounded,
-                                <O as MinOrder<N::OrderingGuarantee>>::Min,
-                                R,
-                            >::collection_kind()),
-                        },
+                name: name.map(ToOwned::to_owned),
+                networking_info: N::networking_info(),
+                serialize_fn: serialize_pipeline.map(|e| e.into()),
+                instantiate_fn: DebugInstantiate::Building,
+                deserialize_fn: deserialize_pipeline.map(|e| e.into()),
+                batch_limit: None,
+                input: Box::new(self.ir_node.replace(HydroNode::Placeholder)),
+                metadata: to.new_node_metadata(Stream::<
+                    (MemberId<L>, (K, V)),
+                    Cluster<'a, L2>,
+                    Unbounded,
+                    <O as MinOrder<N::OrderingGuarantee>>::Min,
+                    R,
+                >::collection_kind()),
+            },
         );
 
         raw_stream

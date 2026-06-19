@@ -36,7 +36,12 @@ where
     /// Create a new `StreamReady` from the given stream, waker, and batch limit.
     /// Use `usize::MAX` for unlimited.
     pub(crate) const fn new(stream: S, waker: Waker, batch_limit: usize) -> Self {
-        Self { stream, waker, batch_limit, pulled_count: 0 }
+        Self {
+            stream,
+            waker,
+            batch_limit,
+            pulled_count: 0,
+        }
     }
 }
 

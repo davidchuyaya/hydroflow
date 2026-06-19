@@ -7,15 +7,18 @@
 //!
 //! # Calibration mode
 //!
-//! If `HYDRO_NET_CALIBRATE=<size>` is set, all sources return synthetic messages
-//! of `<size>` bytes (never blocking), and all sinks count messages, printing
-//! throughput every second. This isolates main-thread processing overhead from
-//! any network or I/O thread effects.
+//! If `HYDRO_NET_CALIBRATE=<size>` is set, the socket is replaced but the real
+//! channel + cross-core hand-off is kept: each read-side channel is prefilled
+//! with synthetic `<size>`-byte messages, and each write-side channel is drained
+//! by a pinned recycler thread that sends the echoed bytes back into a read-side
+//! channel. This keeps the tick thread on the normal `mpsc` receive/send path
+//! without doing socket I/O. Throughput (the recycle count) is printed every
+//! second.
 
 use std::io;
 use std::pin::Pin;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
@@ -41,12 +44,36 @@ fn pin_thread_to_core(core: usize) {
     }
 }
 
-fn io_pool() -> &'static IoThreadPool {
-    IO_POOL.get_or_init(|| {
-        let networking_cores = std::env::var("HYDRO_NETWORKING_CORES").ok().map(|v| {
+/// Pin the main Hydro logic thread to core 0 in calibration mode.
+///
+/// Normally this pinning happens in [`io_pool`], but calibration short-circuits
+/// the source/sink before the I/O pool is ever initialized, so the calibration
+/// compute loop would otherwise float across cores and read as 0% on the
+/// `sar -P 0` (core-0-only) sampler. Called from the `Calibrate` branches, which
+/// run on the main thread during dataflow setup. Idempotent.
+fn pin_calibration_main_thread() {
+    #[cfg(target_os = "linux")]
+    {
+        static PINNED: OnceLock<()> = OnceLock::new();
+        PINNED.get_or_init(|| pin_thread_to_core(0));
+    }
+}
+
+/// Number of networking cores from `HYDRO_NETWORKING_CORES`. Cores `1..=N` are
+/// reserved for I/O (and calibration) side threads; core 0 is the compute thread.
+fn networking_cores() -> Option<usize> {
+    static CFG: OnceLock<Option<usize>> = OnceLock::new();
+    *CFG.get_or_init(|| {
+        std::env::var("HYDRO_NETWORKING_CORES").ok().map(|v| {
             v.parse::<usize>()
                 .expect("HYDRO_NETWORKING_CORES must be a number")
-        });
+        })
+    })
+}
+
+fn io_pool() -> &'static IoThreadPool {
+    IO_POOL.get_or_init(|| {
+        let networking_cores = networking_cores();
         let num_threads = networking_cores.unwrap_or(1);
 
         // Pin main Hydro logic thread to core 0 if networking cores are configured.
@@ -92,12 +119,14 @@ fn next_handle() -> &'static tokio::runtime::Handle {
 /// on an I/O thread which feeds items into this channel.
 pub struct ChannelStreamInner {
     rx: mpsc::UnboundedReceiver<Result<BytesMut, io::Error>>,
+    calibration_depth: Option<Arc<AtomicU64>>,
 }
 
-/// Source stream: either a real channel-backed stream or a calibration stream.
+/// Source stream backed by an in-memory channel. In calibration mode the channel
+/// is prefilled and replenished by a recycler thread instead of a socket I/O
+/// thread; either way the compute thread sees the same real `poll_recv`.
 pub enum ChannelStream {
     Channel(ChannelStreamInner),
-    Calibrate(CalibrateStream),
 }
 
 impl Stream for ChannelStream {
@@ -105,8 +134,24 @@ impl Stream for ChannelStream {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.get_mut() {
-            ChannelStream::Channel(inner) => inner.rx.poll_recv(cx),
-            ChannelStream::Calibrate(s) => Pin::new(s).poll_next(cx),
+            ChannelStream::Channel(inner) => {
+                let poll = inner.rx.poll_recv(cx);
+                if let Some(depth) = &inner.calibration_depth {
+                    match &poll {
+                        Poll::Ready(Some(_)) => {
+                            let _ =
+                                depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                                    Some(depth.saturating_sub(1))
+                                });
+                        }
+                        Poll::Pending => {
+                            CALIBRATE_SOURCE_STARVED.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Poll::Ready(None) => {}
+                    }
+                }
+                poll
+            }
         }
     }
 }
@@ -115,7 +160,6 @@ impl Unpin for ChannelStream {}
 
 /// Environment variable to enable calibration mode: `HYDRO_NET_CALIBRATE=<size>`.
 pub const HYDRO_NET_CALIBRATE_ENV: &str = "HYDRO_NET_CALIBRATE";
-const CALIBRATE_WAKE_FREQUENCY: usize = 1000000;
 
 /// Returns the calibration message size if `HYDRO_NET_CALIBRATE` is set.
 fn calibrate_config() -> Option<usize> {
@@ -128,35 +172,173 @@ fn calibrate_config() -> Option<usize> {
     })
 }
 
-// ─── Calibration source ──────────────────────────────────────────────────────
+// ─── Calibration ─────────────────────────────────────────────────────────────
 
-/// A stream that always returns a fixed-size message
-pub struct CalibrateStream {
-    msg: BytesMut,
-    counter: usize,
+/// Messages recycled by the write side (= server output rate = throughput).
+static CALIBRATE_SINK_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Number of times a calibration source was polled empty.
+static CALIBRATE_SOURCE_STARVED: AtomicU64 = AtomicU64::new(0);
+static CALIBRATE_REPORTER_STARTED: OnceLock<()> = OnceLock::new();
+/// Next core to pin a calibration side thread to (core 0 is the compute thread).
+static CALIBRATE_NEXT_CORE: AtomicUsize = AtomicUsize::new(1);
+
+/// Default number of messages to keep available on each fake read-side channel.
+/// Override with `HYDRO_NET_CALIBRATE_RESERVOIR`.
+const CALIBRATE_DEFAULT_RESERVOIR: usize = 2500000;
+
+/// Pick (round-robin) the next core for a calibration side thread among the
+/// networking cores `1..=N` (`HYDRO_NETWORKING_CORES`), leaving core 0 for the
+/// compute thread. Falls back to core 1 if `HYDRO_NETWORKING_CORES` is unset.
+fn next_calibration_core() -> usize {
+    let n = networking_cores().unwrap_or(1).max(1);
+    1 + (CALIBRATE_NEXT_CORE.fetch_add(1, Ordering::Relaxed) - 1) % n
 }
 
-impl Stream for CalibrateStream {
-    type Item = Result<BytesMut, io::Error>;
+fn calibrate_reservoir() -> usize {
+    static CFG: OnceLock<usize> = OnceLock::new();
+    *CFG.get_or_init(|| {
+        std::env::var("HYDRO_NET_CALIBRATE_RESERVOIR")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(CALIBRATE_DEFAULT_RESERVOIR)
+    })
+}
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        this.counter += 1;
-        if this.counter % CALIBRATE_WAKE_FREQUENCY == 0 {
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        } else {
-            Poll::Ready(Some(Ok(this.msg.clone())))
+#[derive(Clone)]
+struct CalibrateSourceHandle {
+    tx: mpsc::UnboundedSender<Result<BytesMut, io::Error>>,
+    depth: Arc<AtomicU64>,
+}
+
+struct CalibrateSources {
+    sources: Mutex<Vec<CalibrateSourceHandle>>,
+    available: Condvar,
+}
+
+static CALIBRATE_SOURCES: OnceLock<CalibrateSources> = OnceLock::new();
+static CALIBRATE_NEXT_SOURCE: AtomicUsize = AtomicUsize::new(0);
+
+fn calibrate_sources() -> &'static CalibrateSources {
+    CALIBRATE_SOURCES.get_or_init(|| CalibrateSources {
+        sources: Mutex::new(Vec::new()),
+        available: Condvar::new(),
+    })
+}
+
+fn register_calibrate_source(source: CalibrateSourceHandle) {
+    let registry = calibrate_sources();
+    let mut sources = registry.sources.lock().unwrap();
+    sources.push(source);
+    registry.available.notify_all();
+}
+
+fn wait_for_calibrate_source() -> CalibrateSourceHandle {
+    let registry = calibrate_sources();
+    let mut sources = registry.sources.lock().unwrap();
+    while sources.is_empty() {
+        sources = registry.available.wait(sources).unwrap();
+    }
+    let idx = CALIBRATE_NEXT_SOURCE.fetch_add(1, Ordering::Relaxed) % sources.len();
+    sources[idx].clone()
+}
+
+/// Build bytes that decode as a `Vec<u8>` and serialize back to exactly `size`
+/// bytes with bincode's default fixed-width length prefix.
+fn calibrate_payload_template(size: usize) -> BytesMut {
+    const BINCODE_VEC_LEN_PREFIX: usize = size_of::<u64>();
+    assert!(
+        size >= BINCODE_VEC_LEN_PREFIX,
+        "HYDRO_NET_CALIBRATE must be at least {BINCODE_VEC_LEN_PREFIX} bytes for Vec<u8>"
+    );
+
+    let payload_len = size - BINCODE_VEC_LEN_PREFIX;
+    let mut template = BytesMut::with_capacity(size);
+    template.extend_from_slice(&(payload_len as u64).to_le_bytes());
+    template.resize(size, 0);
+    template
+}
+
+/// Prefill a read-side channel with valid synthetic messages and register it as
+/// a recycle target. Returns the real channel-backed source the compute thread
+/// pulls from.
+fn spawn_calibrate_source(size: usize) -> ChannelStream {
+    let (tx, rx) = mpsc::unbounded_channel::<Result<BytesMut, io::Error>>();
+    let depth = Arc::new(AtomicU64::new(0));
+    let template = calibrate_payload_template(size);
+
+    for _ in 0..calibrate_reservoir() {
+        depth.fetch_add(1, Ordering::Relaxed);
+        if tx.send(Ok(template.clone())).is_err() {
+            let _ = depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                Some(depth.saturating_sub(1))
+            });
+            break;
         }
     }
+
+    register_calibrate_source(CalibrateSourceHandle {
+        tx,
+        depth: depth.clone(),
+    });
+
+    ChannelStream::Channel(ChannelStreamInner {
+        rx,
+        calibration_depth: Some(depth),
+    })
 }
 
-impl Unpin for CalibrateStream {}
+/// Spawn the write-side recycler: drains `rx`, counting each message, on a
+/// dedicated pinned, spinning thread, then places those bytes back onto a
+/// registered read-side channel. Returns the real channel-backed sink the
+/// compute thread pushes to.
+fn spawn_calibrate_recycler() -> ChannelSink {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
+    let core = next_calibration_core();
+    std::thread::Builder::new()
+        .name("hydro-io-calibrate-recycle".into())
+        .spawn(move || {
+            #[cfg(target_os = "linux")]
+            if core != 0 {
+                pin_thread_to_core(core);
+            }
+            let source = wait_for_calibrate_source();
+            let reservoir = calibrate_reservoir() as u64;
+            loop {
+                match rx.try_recv() {
+                    Ok(item) => {
+                        CALIBRATE_SINK_COUNT.fetch_add(1, Ordering::Relaxed);
+                        while source.depth.load(Ordering::Relaxed) >= reservoir {
+                            std::hint::spin_loop();
+                        }
 
-// ─── Calibration sink ────────────────────────────────────────────────────────
-
-static CALIBRATE_SINK_COUNT: AtomicU64 = AtomicU64::new(0);
-static CALIBRATE_REPORTER_STARTED: OnceLock<()> = OnceLock::new();
+                        // Reclaim the echoed buffer in place when it's uniquely
+                        // owned (the common case) instead of allocating + copying
+                        // a fresh `BytesMut` per recycled message. The copy was a
+                        // per-message bottleneck on this single recycler thread,
+                        // capping the rate at which the read channel can be
+                        // refilled (and starving the compute thread at batch > 1).
+                        let item = item
+                            .try_into_mut()
+                            .unwrap_or_else(|bytes| BytesMut::from(&bytes[..]));
+                        source.depth.fetch_add(1, Ordering::Relaxed);
+                        if source.tx.send(Ok(item)).is_err() {
+                            let _ = source.depth.fetch_update(
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                                |depth| Some(depth.saturating_sub(1)),
+                            );
+                            break;
+                        }
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => std::hint::spin_loop(),
+                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                }
+            }
+        })
+        .expect("failed to spawn calibration recycler");
+    ChannelSink::Channel(ChannelSinkInner { tx })
+}
 
 fn start_calibrate_reporter() {
     CALIBRATE_REPORTER_STARTED.get_or_init(|| {
@@ -177,36 +359,16 @@ fn start_calibrate_reporter() {
                             delta as f64 / elapsed,
                         );
                     }
+                    let starved = CALIBRATE_SOURCE_STARVED.swap(0, Ordering::Relaxed);
+                    if starved > 0 {
+                        eprintln!("HYDRO_OPTIMIZE_NET_STARVED: {starved}");
+                    }
                     last = now;
                     last_count = count;
                 }
             })
             .expect("failed to spawn calibrate reporter");
     });
-}
-
-/// A sink that counts messages for calibration (always ready, never blocks).
-pub struct CalibrateSink;
-
-impl Sink<Bytes> for CalibrateSink {
-    type Error = io::Error;
-
-    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn start_send(self: Pin<&mut Self>, _item: Bytes) -> Result<(), Self::Error> {
-        CALIBRATE_SINK_COUNT.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
 }
 
 /// Offload the read half of a socket to an I/O thread.
@@ -221,10 +383,8 @@ pub fn offload_source(
     make_source: impl FnOnce() -> DynStreamSink + Send + 'static,
 ) -> ChannelStream {
     if let Some(size) = calibrate_config() {
-        return ChannelStream::Calibrate(CalibrateStream {
-            msg: BytesMut::from(&vec![0u8; size][..]),
-            counter: 0,
-        });
+        pin_calibration_main_thread();
+        return spawn_calibrate_source(size);
     }
 
     let (tx, rx) = mpsc::unbounded_channel();
@@ -236,7 +396,10 @@ pub fn offload_source(
             }
         }
     });
-    ChannelStream::Channel(ChannelStreamInner { rx })
+    ChannelStream::Channel(ChannelStreamInner {
+        rx,
+        calibration_depth: None,
+    })
 }
 
 // ─── Sink (write) side ───────────────────────────────────────────────────────
@@ -247,10 +410,11 @@ pub struct ChannelSinkInner {
     tx: mpsc::UnboundedSender<Bytes>,
 }
 
-/// Sink: either a real channel-backed sink or a calibration counter.
+/// Sink backed by an in-memory channel. In calibration mode the channel is
+/// drained by a recycler thread instead of a socket I/O thread; either way the
+/// compute thread performs the same real `tx.send`.
 pub enum ChannelSink {
     Channel(ChannelSinkInner),
-    Calibrate(CalibrateSink),
 }
 
 impl Sink<Bytes> for ChannelSink {
@@ -266,10 +430,6 @@ impl Sink<Bytes> for ChannelSink {
                 .tx
                 .send(item)
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "I/O thread gone")),
-            ChannelSink::Calibrate(_) => {
-                CALIBRATE_SINK_COUNT.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
         }
     }
 
@@ -320,8 +480,9 @@ async fn recv_spin(rx: &mut mpsc::UnboundedReceiver<Bytes>) -> Option<Bytes> {
 /// thread — see [`offload_source`] for why registration must happen here.
 pub fn offload_sink(make_sink: impl FnOnce() -> DynStreamSink + Send + 'static) -> ChannelSink {
     if calibrate_config().is_some() {
+        pin_calibration_main_thread();
         start_calibrate_reporter();
-        return ChannelSink::Calibrate(CalibrateSink);
+        return spawn_calibrate_recycler();
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
