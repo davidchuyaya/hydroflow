@@ -334,7 +334,10 @@ pub fn leader_election<'a, L: Clone + Debug + Serialize + DeserializeOwned>(
 
     let (p_is_leader, p_accepted_values, fail_ballots) = p_p1b(
         proposer_tick,
-        a_to_proposers_p1b.inspect(q!(|p1b| println!("Proposer received P1b: {:?}", p1b))),
+        a_to_proposers_p1b.inspect(q!(|p1b| println!(
+            "Proposer received P1b, sent ballot: {:?}",
+            p1b.0
+        ))),
         p_ballot.clone(),
         p_has_largest_ballot,
         quorum_size,
@@ -439,41 +442,74 @@ fn p_leader_heartbeat<'a>(
         .broadcast(proposers, TCP.fail_stop().bincode(), nondet!(/** TODO */))
         .values();
 
-    let p_leader_expired = p_to_proposers_i_am_leader
-        .clone()
-        .timeout(
+    // Add random delay depending on node ID so not everyone sends p1a at the same time
+    let p_election_timer = proposers
+        .source_interval_delayed(
+            q!(Duration::from_secs(
+                (CLUSTER_SELF_ID.get_raw_id()
+                    * i_am_leader_check_timeout_delay_multiplier as u32)
+                    .into())),
             q!(Duration::from_secs(i_am_leader_check_timeout)),
             nondet!(
-                /// Delayed timeouts only affect which leader wins re-election. If the leadership flag
-                /// is gained after timeout correctly ignore the timeout. If the flag is lost after
-                /// timeout we correctly attempt to become the leader.
+                /// If the leader 'un-expires' due to non-deterministic delay, we return
+                /// to a stable leader state. If the leader remains expired, non-deterministic
+                /// delay is propagated to the non-determinism of which leader is elected.
                 nondet_reelection
             ),
         )
-        .snapshot(proposer_tick, nondet!(/** absorbed into timeout */))
-        .filter_if(!p_is_leader);
+        .batch(proposer_tick, nondet!(/** absorbed into interval */))
+        .first()
+        .is_some();
 
-    // Add random delay depending on node ID so not everyone sends p1a at the same time
-    let p_trigger_election = p_leader_expired.is_some().and(
-        proposers
-            .source_interval_delayed(
-                q!(Duration::from_secs(
-                    (CLUSTER_SELF_ID.get_raw_id()
-                        * i_am_leader_check_timeout_delay_multiplier as u32)
-                        .into()
-                )),
-                q!(Duration::from_secs(i_am_leader_check_timeout)),
-                nondet!(
-                    /// If the leader 'un-expires' due to non-deterministic delay, we return
-                    /// to a stable leader state. If the leader remains expired, non-deterministic
-                    /// delay is propagated to the non-determinism of which leader is elected.
-                    nondet_reelection
-                ),
-            )
-            .batch(proposer_tick, nondet!(/** absorbed into interval */))
-            .first()
-            .is_some(),
-    );
+    let p_heartbeat_observed = p_to_proposers_i_am_leader
+        .clone()
+        .batch(
+            proposer_tick,
+            nondet!(
+                /// Delayed heartbeats may lead to leader election attempts even if the
+                /// leader is alive. This is the same nondeterminism as the previous timeout.
+                nondet_reelection
+            ),
+        )
+        .fold(
+            q!(|| false),
+            q!(
+                |observed, _| *observed = true,
+                commutative = manual_proof!(/** heartbeat payload is ignored */),
+                idempotent = manual_proof!(/** repeated heartbeats are ignored */)
+            ),
+        );
+
+    let (p_latest_heartbeat_complete, p_latest_heartbeat_prev) =
+        proposer_tick.cycle_with_initial(proposer_tick.singleton(q!(None::<std::time::Instant>)));
+    let p_latest_heartbeat =
+        p_heartbeat_observed
+            .zip(p_latest_heartbeat_prev)
+            .map(q!(|(observed, prev)| {
+                if observed {
+                    Some(std::time::Instant::now())
+                } else {
+                    prev
+                }
+            }));
+    p_latest_heartbeat_complete.complete_next_tick(p_latest_heartbeat.clone());
+
+    let p_leader_expired = p_latest_heartbeat
+        .filter_map(q!(move |latest_heartbeat| {
+            match latest_heartbeat {
+                Some(latest_heartbeat)
+                    if std::time::Instant::now().duration_since(latest_heartbeat)
+                        <= Duration::from_secs(i_am_leader_check_timeout) =>
+                {
+                    None
+                }
+                _ => Some(()),
+            }
+        }))
+        .filter_if(!p_is_leader)
+        .filter_if(p_election_timer);
+
+    let p_trigger_election = p_leader_expired.is_some();
     (p_to_proposers_i_am_leader, p_trigger_election)
 }
 
