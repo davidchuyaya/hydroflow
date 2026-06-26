@@ -294,21 +294,14 @@ impl<'a, T, L, B: Boundedness, O: Ordering, R: Retries> Stream<T, Process<'a, L>
         self,
         to: &Cluster<'a, L2>,
         via: N,
-        nondet_membership: NonDet,
+        _nondet_membership: NonDet,
     ) -> Stream<T, Cluster<'a, L2>, Unbounded, <O as MinOrder<N::OrderingGuarantee>>::Min, R>
     where
         T: Clone + Serialize + DeserializeOwned,
         O: MinOrder<N::OrderingGuarantee>,
     {
-        let ids = track_membership(self.location.source_cluster_members(to));
-        sliced! {
-            let members_snapshot = use(ids, nondet_membership);
-            let elements = use(self, nondet_membership);
-
-            let current_members = members_snapshot.filter(q!(|b| *b));
-            elements.repeat_with_keys(current_members)
-        }
-        .demux(to, via)
+        // Use old broadcast method so partitioning works for static clusters. Don't want to rewrite every use of broadcast
+        self.broadcast_closed(to, via)
     }
 
     /// Broadcasts elements of this stream to all members of a cluster,
@@ -1140,7 +1133,7 @@ impl<'a, T, L, B: Boundedness, O: Ordering, R: Retries> Stream<T, Cluster<'a, L>
         self,
         to: &Cluster<'a, L2>,
         via: N,
-        nondet_membership: NonDet,
+        _nondet_membership: NonDet,
     ) -> KeyedStream<
         MemberId<L>,
         T,
@@ -1153,15 +1146,21 @@ impl<'a, T, L, B: Boundedness, O: Ordering, R: Retries> Stream<T, Cluster<'a, L>
         T: Clone + Serialize + DeserializeOwned,
         O: MinOrder<N::OrderingGuarantee>,
     {
-        let ids = track_membership(self.location.source_cluster_members(to));
-        sliced! {
-            let members_snapshot = use(ids, nondet_membership);
-            let elements = use(self, nondet_membership);
+        // Use old broadcast method so partitioning works for static clusters. Don't want to rewrite every use of broadcast
+        let cluster_ids = ClusterIds {
+            key: to.key,
+            _phantom: PhantomData,
+        };
+        let member_ids = self.location.source_iter(q!(cluster_ids
+            .iter()
+            .map(|id| MemberId::from_tagless(id.clone()))));
 
-            let current_members = members_snapshot.filter(q!(|b| *b));
-            elements.repeat_with_keys(current_members)
-        }
-        .demux(to, via)
+        // Late joiners will receive no data from this broadcast, which is
+        // future-monotone and eventually consistent (a safe under-approximation).
+        self.cross_product(member_ids.weaken_retries())
+            .map(q!(|(data, member_id)| (member_id, data)))
+            .into_keyed()
+            .demux(to, via)
     }
 
     #[cfg(feature = "sim")]

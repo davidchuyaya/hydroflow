@@ -786,7 +786,7 @@ fn sequence_payload<'a, P: PaxosPayload + Hash>(
         proposers,
     );
 
-    let (quorums, fails) = collect_quorum(a_to_proposers_p2b, f + 1, 2 * f + 1);
+    let (quorums, fails) = collect_quorum(a_to_proposers_p2b, 2 * f + 1, 2 * f + 1);
 
     (
         quorums.map(q!(|(slot, _ballot, value)| (slot, value))),
