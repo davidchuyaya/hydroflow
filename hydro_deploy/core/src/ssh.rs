@@ -444,7 +444,7 @@ impl<T: LaunchedSshHost> LaunchedHost for T {
             // compute thread's cost and excludes the busy side threads.
             // TODO: Revert to only logging cycles in userspace? Reduces time
             command = format!(
-                "perf record -C 0 -F {frequency} -e cycles --call-graph dwarf,65528 -o {PERF_OUTFILE} {command}",
+                "perf record -F {frequency} -e cycles --call-graph dwarf,65528 -o {PERF_OUTFILE} {command}",
             );
         }
 
