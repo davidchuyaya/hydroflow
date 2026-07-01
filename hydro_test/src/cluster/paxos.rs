@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::paxos_with_client::PaxosLike;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Hash)]
 pub struct Proposer {}
 pub struct Acceptor {}
 
@@ -59,7 +59,7 @@ pub struct LogValue<P> {
     pub value: Option<P>, // might be a hole
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug, Hash)]
 pub struct P2a<P, S> {
     pub sender: MemberId<S>,
     pub ballot: Ballot,
