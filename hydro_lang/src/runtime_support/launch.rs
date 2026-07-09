@@ -88,7 +88,7 @@ pub async fn launch_flow_stdin_commands(flow: impl Future) {
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).unwrap();
         if line.starts_with("stop") {
-            stop.0.send(()).unwrap();
+            let _ = stop.0.send(());
         } else {
             eprintln!("Unexpected stdin input: {:?}", line);
         }
