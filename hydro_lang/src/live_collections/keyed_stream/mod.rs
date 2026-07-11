@@ -1651,14 +1651,22 @@ impl<'a, K, V, L: Location<'a>, B: Boundedness, O: Ordering, R: Retries>
         R: IsExactlyOnce,
         K: Clone + Eq + Hash,
     {
-        self.fold_early_stop(
-            q!(|| None),
-            q!(|acc, v| {
-                *acc = Some(v);
-                true
-            }),
+        let reduced = self
+            .make_totally_ordered()
+            .make_exactly_once()
+            .reduce(q!(|_, _| {}));
+        KeyedSingleton::new(
+            reduced.location.clone(),
+            HydroNode::Cast {
+                inner: Box::new(reduced.ir_node.replace(HydroNode::Placeholder)),
+                metadata: reduced.location.new_node_metadata(KeyedSingleton::<
+                    K,
+                    V,
+                    L,
+                    B::WithBoundedValue,
+                >::collection_kind()),
+            },
         )
-        .map(q!(|v| v.unwrap()))
     }
 
     /// Returns a keyed stream containing at most the first `n` values per key,
