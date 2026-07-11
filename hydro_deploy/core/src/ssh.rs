@@ -411,30 +411,22 @@ impl<T: LaunchedSshHost> LaunchedHost for T {
             // Note: `LaunchedSshHost` assumes `perf` on linux.
             //
             // For the network-calibration experiment, collect aggregate hardware
-            // counters on the main Hydro thread only. Avoid `perf stat -C 0`:
-            // that is CPU-wide PMU counting, which can be unsupported on EC2 even
-            // when process/thread-scoped `perf record` works. The initial thread's
-            // TID is the process PID, and Hydro pins that thread to core 0 when
-            // `HYDRO_NETWORKING_CORES` or calibration is enabled. Side threads have
-            // separate TIDs, so `perf stat -t $hydro_pid` excludes the spinning I/O
-            // and calibration recycler threads.
+            // counters using the same command-scoped mode as the previous working
+            // `perf record` path. Avoid `perf stat -C 0`: that is CPU-wide PMU
+            // counting, which can be unsupported on EC2 even when process-scoped
+            // perf works. Also avoid post-launch `perf stat -t $pid`: attaching
+            // after launch can race short setup/exits and fail with ESRCH.
+            //
+            // `--per-thread` keeps side-thread counters separate from the main
+            // Hydro thread in the output, so analysis can ignore `hydro-io-*` and
+            // calibration side threads rather than folding them into core-0 stats.
             //
             // The output is CSV-ish perf-stat text written to `PERF_OUTFILE`; the
             // download path above intentionally stores that text in `fold_outfile`
             // for this experiment.
-            let perf_script = format!(
-                r#"{command} &
-hydro_pid=$!
-while [ ! -d "/proc/$hydro_pid/task/$hydro_pid" ]; do sleep 0.01; done
-perf stat -t "$hydro_pid" -x, -e cycles,instructions,stalled-cycles-backend,cache-references,cache-misses,LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses -o {PERF_OUTFILE} -- sleep 2147483647 &
-perf_pid=$!
-wait "$hydro_pid"
-status=$?
-kill -INT "$perf_pid" >/dev/null 2>&1 || true
-wait "$perf_pid" >/dev/null 2>&1 || true
-exit "$status""#
+            command = format!(
+                "perf stat --per-thread -x, -e cycles,instructions,stalled-cycles-backend,cache-references,cache-misses,LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses -o {PERF_OUTFILE} -- {command}",
             );
-            command = format!("sh -c {}", shell_escape::unix::escape(perf_script.into()));
         }
 
         // Prepend env variables
