@@ -184,7 +184,7 @@ static CALIBRATE_NEXT_CORE: AtomicUsize = AtomicUsize::new(1);
 
 /// Default number of messages to keep available on each fake read-side channel.
 /// Override with `HYDRO_NET_CALIBRATE_RESERVOIR`.
-const CALIBRATE_DEFAULT_RESERVOIR: usize = 2500000;
+const CALIBRATE_DEFAULT_RESERVOIR: usize = 250000;
 
 /// Pick (round-robin) the next core for a calibration side thread among the
 /// networking cores `1..=N` (`HYDRO_NETWORKING_CORES`), leaving core 0 for the
