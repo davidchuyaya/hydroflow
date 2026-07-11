@@ -144,60 +144,31 @@ impl LaunchedBinary for LaunchedSshBinary {
             }
 
             #[cfg(feature = "profile-folding")]
-            let script_channel = session.open_channel().await?;
+            let fold_data = ProgressTracker::progress_leaf(
+                "downloading perf stat data",
+                |progress, _| async move {
+                    let sftp =
+                        async_retry(&|| session.open_sftp(), 10, Duration::from_secs(1)).await?;
 
-            #[cfg(feature = "profile-folding")]
-            let fold_data = ProgressTracker::leaf("perf script & folding (remote)", async move {
-                let mut stderr_lines = script_channel.stderr().lines();
-                let mut stdout = script_channel.stdout();
+                    let mut remote_perf_stat = sftp.open(PERF_OUTFILE).await?;
+                    let total_size = remote_perf_stat.metadata().await?.size.unwrap();
 
-                // Pattern on `()` to make sure no `Result`s are ignored.
-                let ((), fold_data, ()) = tokio::try_join!(
-                    async move {
-                        // Log stderr.
-                        while let Ok(Some(s)) = stderr_lines.next_line().await {
-                            ProgressTracker::eprintln(format!("[perf stderr] {s}"));
+                    let mut stat_data = Vec::with_capacity(total_size as usize);
+                    let mut index = 0;
+                    loop {
+                        let mut buffer = [0; 16 * 1024];
+                        let n = remote_perf_stat.read(&mut buffer).await?;
+                        if n == 0 {
+                            break;
                         }
-                        Result::<_>::Ok(())
-                    },
-                    async move {
-                        // Both `perf script` (symbolization) and stack folding run on the remote
-                        // host; we only download the already-folded output, which is far smaller
-                        // than the raw `perf script` text stream we used to transfer.
-                        //
-                        // NOTE: drain via the `AsyncBufRead` (`fill_buf`/`consume`) interface
-                        // rather than `read_to_end`. `async-ssh2-russh`'s `AsyncRead::poll_read`
-                        // clamps to `ReadBuf::capacity()` instead of `remaining()`, so it panics
-                        // when `read_to_end` reuses a partially-filled buffer; its `AsyncBufRead`
-                        // impl is correct.
-                        let mut fold_data = Vec::new();
-                        loop {
-                            let chunk = stdout.fill_buf().await?;
-                            if chunk.is_empty() {
-                                break;
-                            }
-                            let n = chunk.len();
-                            fold_data.extend_from_slice(chunk);
-                            stdout.consume(n);
-                        }
-                        Result::<_>::Ok(fold_data)
-                    },
-                    async move {
-                        // Run command (last!). `stackcollapse-perf.pl` is installed by the
-                        // tracing `setup_command`; its output matches inferno's folded format.
-                        script_channel
-                            .exec(
-                                false,
-                                format!(
-                                    "perf script --symfs=/ -i {PERF_OUTFILE} | stackcollapse-perf.pl"
-                                ),
-                            )
-                            .await?;
-                        Ok(())
-                    },
-                )?;
-                Result::<_>::Ok(fold_data)
-            })
+                        stat_data.extend_from_slice(&buffer[..n]);
+                        index += n;
+                        progress(((index as f64 / total_size as f64) * 100.0) as u64);
+                    }
+
+                    Ok::<_, anyhow::Error>(stat_data)
+                },
+            )
             .await?;
 
             #[cfg(feature = "profile-folding")]
@@ -401,7 +372,7 @@ impl<T: LaunchedSshHost> LaunchedHost for T {
 
         // Launch with tracing if specified.
         if let Some(TracingOptions {
-            frequency,
+            frequency: _,
             setup_command,
             ..
         }) = tracing.clone()
@@ -436,15 +407,19 @@ impl<T: LaunchedSshHost> LaunchedHost for T {
             })
             .await?;
 
-            // Attach perf to the command
+            // Attach perf to the command.
             // Note: `LaunchedSshHost` assumes `perf` on linux.
-            // `-C 0` records only core 0 (system-wide on that CPU), matching the
+            // For the network-calibration experiment, collect aggregate hardware
+            // counters on core 0 instead of sampled call stacks. This matches the
             // `sar ... -P 0` sampler: the compute (tick) thread is pinned to core 0
-            // and I/O / calibration side threads to cores 1.., so this captures the
-            // compute thread's cost and excludes the busy side threads.
-            // TODO: Revert to only logging cycles in userspace? Reduces time
+            // and I/O / calibration side threads to cores 1.., so these counters
+            // capture the main thread's cost and exclude the busy side threads.
+            //
+            // The output is CSV-ish perf-stat text written to `PERF_OUTFILE`; the
+            // download path above intentionally stores that text in `fold_outfile`
+            // for this experiment.
             command = format!(
-                "perf record -F {frequency} -e cycles --call-graph dwarf,65528 -o {PERF_OUTFILE} {command}",
+                "perf stat -C 0 -x, -e cycles,instructions,stalled-cycles-backend,cache-references,cache-misses,LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses -o {PERF_OUTFILE} -- {command}",
             );
         }
 
