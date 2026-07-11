@@ -417,15 +417,16 @@ impl<T: LaunchedSshHost> LaunchedHost for T {
             // perf works. Also avoid post-launch `perf stat -t $pid`: attaching
             // after launch can race short setup/exits and fail with ESRCH.
             //
-            // `--per-thread` keeps side-thread counters separate from the main
-            // Hydro thread in the output, so analysis can ignore `hydro-io-*` and
-            // calibration side threads rather than folding them into core-0 stats.
+            // `--no-inherit` keeps counters scoped to the initial Hydro task
+            // instead of inheriting them into newly-created I/O / calibration
+            // threads. Since the initial task is the main Hydro thread, this gives
+            // the main-thread counter totals we want without post-launch attach.
             //
             // The output is CSV-ish perf-stat text written to `PERF_OUTFILE`; the
             // download path above intentionally stores that text in `fold_outfile`
             // for this experiment.
             command = format!(
-                "perf stat --per-thread -x, -e cycles,instructions,stalled-cycles-backend,cache-references,cache-misses,LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses -o {PERF_OUTFILE} -- {command}",
+                "perf stat --no-inherit -x, -e cycles,instructions,stalled-cycles-backend,cache-references,cache-misses,LLC-loads,LLC-load-misses,dTLB-loads,dTLB-load-misses -o {PERF_OUTFILE} -- {command}",
             );
         }
 
