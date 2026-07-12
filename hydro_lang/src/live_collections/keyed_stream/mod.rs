@@ -40,6 +40,9 @@ use crate::properties::{
 
 pub mod networking;
 
+const KEYED_FIRST_SCAN_TAG: f64 = -2.0;
+const KEYED_FIRST_FLATMAP_TAG: f64 = -3.0;
+
 /// Streaming elements of type `V` grouped by a key of type `K`.
 ///
 /// Keyed Streams capture streaming elements of type `V` grouped by a key of type `K`, where the
@@ -1651,22 +1654,25 @@ impl<'a, K, V, L: Location<'a>, B: Boundedness, O: Ordering, R: Retries>
         R: IsExactlyOnce,
         K: Clone + Eq + Hash,
     {
-        let reduced = self
-            .make_totally_ordered()
-            .make_exactly_once()
-            .reduce(q!(|_, _| {}));
-        KeyedSingleton::new(
-            reduced.location.clone(),
-            HydroNode::Cast {
-                inner: Box::new(reduced.ir_node.replace(HydroNode::Placeholder)),
-                metadata: reduced.location.new_node_metadata(KeyedSingleton::<
-                    K,
-                    V,
-                    L,
-                    B::WithBoundedValue,
-                >::collection_kind()),
-            },
-        )
+        let out_without_bound_cast = self.generator(
+            q!(|| None),
+            q!(|acc, v| {
+                *acc = Some(v);
+                Generate::Return(acc.take().unwrap())
+            }),
+        );
+
+        {
+            let mut ir_node = out_without_bound_cast.ir_node.borrow_mut();
+            ir_node.op_metadata_mut().cpu_usage = Some(KEYED_FIRST_FLATMAP_TAG);
+            if let HydroNode::FlatMap { input, .. } = &mut *ir_node {
+                input.op_metadata_mut().cpu_usage = Some(KEYED_FIRST_SCAN_TAG);
+            }
+        }
+
+        // SAFETY: The generator will only ever return at most one value per key, since once it
+        // returns a value for a key it will never process any more values for that key.
+        out_without_bound_cast.cast_at_most_one_entry_per_key()
     }
 
     /// Returns a keyed stream containing at most the first `n` values per key,
