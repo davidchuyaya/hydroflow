@@ -951,9 +951,12 @@ impl<'a, K, V, L: Location<'a>, B: Boundedness, O: Ordering, R: Retries>
         let f: ManualExpr<F, _> = ManualExpr::new(move |ctx: &L| f.splice_fn1_ctx(ctx));
         let filter_map_f = q!({
             let orig = f;
-            move |(k, v)| match orig(v) {
-                Some(o) => Some((k, o)),
-                None => None,
+            move |(k, v)| {
+                if let Some(o) = orig(v) {
+                    Some((k, o))
+                } else {
+                    None
+                }
             }
         })
         .splice_fn1_ctx::<(K, V), Option<(K, U)>>(&self.location)
@@ -1010,9 +1013,10 @@ impl<'a, K, V, L: Location<'a>, B: Boundedness, O: Ordering, R: Retries>
             let orig = f;
             move |(k, v)| {
                 let out = orig((Clone::clone(&k), v));
-                match out {
-                    Some(o) => Some((k, o)),
-                    None => None,
+                if let Some(o) = out {
+                    Some((k, o))
+                } else {
+                    None
                 }
             }
         })
