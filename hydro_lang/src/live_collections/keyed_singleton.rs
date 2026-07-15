@@ -1480,7 +1480,10 @@ where
         let f: ManualExpr<F, _> = ManualExpr::new(move |ctx: &L| f.splice_fn1_ctx(ctx));
         let filter_map_f = q!({
             let orig = f;
-            move |(k, v)| orig(v).map(|o| (k, o))
+            move |(k, v)| match orig(v) {
+                Some(o) => Some((k, o)),
+                None => None,
+            }
         })
         .splice_fn1_ctx::<(K, V), Option<(K, U)>>(&self.location)
         .into();
