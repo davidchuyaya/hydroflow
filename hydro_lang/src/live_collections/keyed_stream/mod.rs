@@ -42,6 +42,8 @@ pub mod networking;
 
 const KEYED_FIRST_SCAN_TAG: f64 = -2.0;
 const KEYED_FIRST_FLATMAP_TAG: f64 = -3.0;
+const KEYED_GENERATOR_SCAN_TAG: f64 = -4.0;
+const KEYED_GENERATOR_FLATMAP_TAG: f64 = -5.0;
 
 /// Streaming elements of type `V` grouped by a key of type `K`.
 ///
@@ -1531,7 +1533,7 @@ impl<'a, K, V, L: Location<'a>, B: Boundedness, O: Ordering, R: Retries>
         .splice_fn2_borrow_mut_ctx::<HashMap<K, Option<A>>, (K, V), _>(&this.location)
         .into();
 
-        let scan_node = HydroNode::Scan {
+        let mut scan_node = HydroNode::Scan {
             init: scan_init,
             acc: scan_f,
             input: Box::new(this.ir_node.replace(HydroNode::Placeholder)),
@@ -1543,11 +1545,12 @@ impl<'a, K, V, L: Location<'a>, B: Boundedness, O: Ordering, R: Retries>
                 ExactlyOnce,
             >::collection_kind()),
         };
+        scan_node.op_metadata_mut().cpu_usage = Some(KEYED_GENERATOR_SCAN_TAG);
 
         let flatten_f = q!(|d| d)
             .splice_fn1_ctx::<Option<(K, U)>, _>(&this.location)
             .into();
-        let flatten_node = HydroNode::FlatMap {
+        let mut flatten_node = HydroNode::FlatMap {
             f: flatten_f,
             input: Box::new(scan_node),
             metadata: this.location.new_node_metadata(KeyedStream::<
@@ -1559,6 +1562,7 @@ impl<'a, K, V, L: Location<'a>, B: Boundedness, O: Ordering, R: Retries>
                 ExactlyOnce,
             >::collection_kind()),
         };
+        flatten_node.op_metadata_mut().cpu_usage = Some(KEYED_GENERATOR_FLATMAP_TAG);
 
         KeyedStream::new(this.location.clone(), flatten_node)
     }
